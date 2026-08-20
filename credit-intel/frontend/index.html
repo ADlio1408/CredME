@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Credit Intel · Underwriting Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  :root{
+    --ink:#0B1420;
+    --ink-2:#121F30;
+    --paper:#F6F4EE;
+    --paper-2:#EDEAE1;
+    --line: #D8D3C4;
+    --teal:#1F5C56;
+    --teal-bright:#2C8577;
+    --amber:#B8842B;
+    --red:#A83A32;
+    --green:#2C7A4B;
+    --text-ink:#0B1420;
+    --text-muted:#5B6472;
+    --mono: 'IBM Plex Mono', ui-monospace, monospace;
+    --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--text-ink);font-family:var(--sans);}
+  ::selection{background:var(--teal-bright); color:white;}
+
+  .app{display:grid; grid-template-columns: 280px 1fr; min-height:100vh;}
+  @media (max-width: 900px){ .app{grid-template-columns: 1fr;} .side{position:static !important;} }
+
+  .side{
+    background: linear-gradient(180deg, var(--ink) 0%, var(--ink-2) 100%);
+    color:#DCE3E8; padding:28px 24px; position:sticky; top:0; height:100vh;
+    display:flex; flex-direction:column; justify-content:space-between;
+  }
+  .brand-eyebrow{font-family:var(--mono); font-size:11px; letter-spacing:.14em; color:#7FA69E; text-transform:uppercase;}
+  .brand-title{font-size:22px; font-weight:600; line-height:1.25; margin:10px 0 6px; letter-spacing:-0.01em;}
+  .brand-sub{font-size:13px; color:#8C99A6; line-height:1.5;}
+  .side-section{margin-top:34px;}
+  .side-label{font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:#5E7078; margin-bottom:10px;}
+  .side-row{display:flex; justify-content:space-between; font-size:12.5px; padding:7px 0; border-bottom:1px solid rgba(255,255,255,.06); color:#B7C1C8;}
+  .side-row b{color:#EDEDE4; font-weight:500;}
+  .cfg input{width:100%; background:#0A1119; border:1px solid #26363E; color:#DCE3E8; font-family:var(--mono); font-size:12px; padding:8px 9px; border-radius:4px; margin-bottom:8px;}
+  .cfg label{font-size:10.5px; color:#6E7F87; font-family:var(--mono); text-transform:uppercase; letter-spacing:.08em;}
+  .foot-note{font-size:11px; color:#4C5A62; line-height:1.6;}
+
+  .main{padding:36px 44px 80px; max-width:980px;}
+  h1.page-title{font-size:26px; margin:0 0 4px; letter-spacing:-.01em;}
+  .page-sub{color:var(--text-muted); font-size:14.5px; margin-bottom:30px; max-width:640px; line-height:1.55;}
+
+  .panel{background:white; border:1px solid var(--line); border-radius:6px; padding:26px; margin-bottom:22px;}
+  .panel-title{font-family:var(--mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--teal); margin:0 0 18px; display:flex; align-items:center; gap:8px;}
+  .panel-title:before{content:''; width:14px; height:2px; background:var(--teal-bright); display:inline-block;}
+
+  .grid{display:grid; grid-template-columns: repeat(3, 1fr); gap:16px 18px;}
+  @media (max-width: 640px){ .grid{grid-template-columns: 1fr 1fr;} }
+  .field label{display:block; font-size:11.5px; color:var(--text-muted); margin-bottom:5px; font-weight:500;}
+  .field input, .field select{
+    width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:4px;
+    font-family:var(--sans); font-size:13.5px; background:#FCFBF8; color:var(--text-ink);
+  }
+  .field input:focus, .field select:focus{outline:none; border-color:var(--teal-bright); background:white;}
+
+  .submit-row{display:flex; align-items:center; gap:14px; margin-top:24px;}
+  .btn{
+    font-family:var(--mono); font-size:12.5px; letter-spacing:.04em; text-transform:uppercase;
+    background:var(--ink); color:#EFEFE6; border:none; padding:13px 22px; border-radius:4px; cursor:pointer;
+    transition:background .15s ease;
+  }
+  .btn:hover{background:#1A2B3B;}
+  .btn:disabled{opacity:.5; cursor:not-allowed;}
+  .btn.secondary{background:transparent; color:var(--ink); border:1px solid var(--line);}
+  .btn.secondary:hover{border-color:var(--ink);}
+  .error-msg{color:var(--red); font-size:13px; font-family:var(--mono);}
+
+  /* --- Score gauge, the signature element --- */
+  .result-top{display:grid; grid-template-columns: 220px 1fr; gap:30px; align-items:center;}
+  @media (max-width: 700px){ .result-top{grid-template-columns:1fr;} }
+  .gauge-wrap{display:flex; flex-direction:column; align-items:center;}
+  .gauge-score{font-family:var(--mono); font-size:13px; color:var(--text-muted); margin-top:-6px;}
+  .decision-badge{
+    display:inline-block; font-family:var(--mono); font-size:12px; letter-spacing:.1em; text-transform:uppercase;
+    padding:6px 12px; border-radius:3px; font-weight:600; margin-bottom:10px;
+  }
+  .decision-APPROVE{background:#E4F1E9; color:var(--green);}
+  .decision-REFER{background:#F7EEDC; color:var(--amber);}
+  .decision-DECLINE{background:#F6E4E2; color:var(--red);}
+  .prob-line{font-family:var(--mono); font-size:13px; color:var(--text-muted); margin-bottom:14px;}
+  .explanation{font-size:14.5px; line-height:1.65; color:#20303A; background:var(--paper-2); border-left:3px solid var(--teal-bright); padding:14px 16px; border-radius:0 4px 4px 0;}
+
+  .factor-row{display:grid; grid-template-columns: 170px 1fr 90px; align-items:center; gap:12px; padding:8px 0; border-bottom:1px solid var(--paper-2); font-size:12.5px;}
+  .factor-name{font-family:var(--mono); font-size:11.5px; color:#33424C;}
+  .factor-bar-track{height:7px; background:var(--paper-2); border-radius:4px; overflow:hidden;}
+  .factor-bar-fill{height:100%; border-radius:4px;}
+  .factor-bar-fill.increases_risk{background:var(--red);}
+  .factor-bar-fill.decreases_risk{background:var(--teal-bright);}
+  .factor-dir{font-family:var(--mono); font-size:10.5px; text-align:right; text-transform:uppercase; letter-spacing:.03em;}
+  .factor-dir.increases_risk{color:var(--red);}
+  .factor-dir.decreases_risk{color:var(--teal-bright);}
+
+  .signals-grid{display:grid; grid-template-columns: repeat(3, 1fr); gap:14px; margin-top:6px;}
+  .signal-cell{background:var(--paper-2); border-radius:4px; padding:12px 14px;}
+  .signal-cell .k{font-size:10.5px; color:var(--text-muted); font-family:var(--mono); text-transform:uppercase; letter-spacing:.04em;}
+  .signal-cell .v{font-size:16px; font-weight:600; margin-top:3px; font-family:var(--mono);}
+
+  .recent-table{width:100%; border-collapse:collapse; font-size:12.5px;}
+  .recent-table th{text-align:left; font-family:var(--mono); font-size:10.5px; text-transform:uppercase; color:var(--text-muted); padding:6px 8px; border-bottom:1px solid var(--line);}
+  .recent-table td{padding:7px 8px; border-bottom:1px solid var(--paper-2); font-family:var(--mono);}
+
+  .empty-state{color:var(--text-muted); font-size:13.5px; padding:30px 0; text-align:center;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback } = React;
+
+// ---------- config ----------
+const DEFAULT_API_BASE = "http://localhost:8000";
+
+const FIELD_GROUPS = [
+  {
+    title: "Applicant",
+    fields: [
+      ["age", "Age", "number", 40],
+      ["employment_status", "Employment Status", "select", "Employed", ["Employed","Self-Employed","Unemployed"]],
+      ["education_level", "Education Level", "select", "Bachelor", ["High School","Associate","Bachelor","Master","Doctorate"]],
+      ["experience", "Years Experience", "number", 12],
+      ["marital_status", "Marital Status", "select", "Married", ["Single","Married","Divorced","Widowed"]],
+      ["number_of_dependents", "Dependents", "number", 1],
+      ["home_ownership_status", "Home Ownership", "select", "Own", ["Own","Mortgage","Rent","Other"]],
+      ["job_tenure", "Job Tenure (yrs)", "number", 8],
+    ],
+  },
+  {
+    title: "Income & Assets",
+    fields: [
+      ["annual_income", "Annual Income ($)", "number", 85000],
+      ["monthly_income", "Monthly Income ($)", "number", 7083],
+      ["savings_account_balance", "Savings Balance ($)", "number", 18000],
+      ["checking_account_balance", "Checking Balance ($)", "number", 6000],
+      ["total_assets", "Total Assets ($)", "number", 150000],
+      ["total_liabilities", "Total Liabilities ($)", "number", 30000],
+      ["net_worth", "Net Worth ($)", "number", 120000],
+    ],
+  },
+  {
+    title: "Credit Profile",
+    fields: [
+      ["credit_score", "Credit Score", "number", 700],
+      ["credit_card_utilization_rate", "Card Utilization (0-1)", "number", 0.25],
+      ["number_of_open_credit_lines", "Open Credit Lines", "number", 4],
+      ["number_of_credit_inquiries", "Credit Inquiries", "number", 1],
+      ["length_of_credit_history", "Credit History (yrs)", "number", 10],
+      ["payment_history", "On-time Payments (count)", "number", 8],
+      ["bankruptcy_history", "Bankruptcy History (0/1)", "number", 0],
+      ["previous_loan_defaults", "Previous Defaults (0/1)", "number", 0],
+      ["utility_bills_payment_history", "Utility Payment Rate (0-1)", "number", 0.95],
+    ],
+  },
+  {
+    title: "Loan Request",
+    fields: [
+      ["loan_amount", "Loan Amount ($)", "number", 15000],
+      ["loan_duration", "Duration (months)", "number", 36],
+      ["loan_purpose", "Purpose", "select", "Debt Consolidation", ["Home","Auto","Education","Debt Consolidation","Medical","Other"]],
+      ["monthly_debt_payments", "Monthly Debt Payments ($)", "number", 450],
+      ["debt_to_income_ratio", "Debt-to-Income (0-1)", "number", 0.22],
+      ["total_debt_to_income_ratio", "Total DTI (0-1)", "number", 0.26],
+      ["base_interest_rate", "Base Interest Rate (0-1)", "number", 0.09],
+      ["interest_rate", "Interest Rate (0-1)", "number", 0.11],
+      ["monthly_loan_payment", "Monthly Loan Payment ($)", "number", 480],
+    ],
+  },
+];
+
+function buildDefaultForm() {
+  const form = {};
+  FIELD_GROUPS.forEach(g => g.fields.forEach(([key, , , def]) => { form[key] = def; }));
+  form.account_id = "";
+  return form;
+}
+
+// ---------- gauge ----------
+function ScoreGauge({ score }) {
+  const clamped = Math.max(0, Math.min(100, score ?? 0));
+  const angle = -90 + (clamped / 100) * 180; // -90..90
+  const rad = (angle * Math.PI) / 180;
+  const cx = 100, cy = 100, r = 78;
+  const needleX = cx + r * Math.sin(rad);
+  const needleY = cy - r * Math.cos(rad);
+  const color = clamped >= 70 ? "#2C7A4B" : clamped >= 40 ? "#B8842B" : "#A83A32";
+
+  const arcPoint = (pct) => {
+    const a = (-90 + pct * 180) * Math.PI / 180;
+    return [cx + r * Math.sin(a), cy - r * Math.cos(a)];
+  };
+  const [x0, y0] = arcPoint(0);
+  const [x1, y1] = arcPoint(1);
+
+  return (
+    <div className="gauge-wrap">
+      <svg width="200" height="130" viewBox="0 0 200 120">
+        <path d={`M ${x0} ${y0} A ${r} ${r} 0 0 1 ${x1} ${y1}`} stroke="#EDEAE1" strokeWidth="14" fill="none" strokeLinecap="round"/>
+        <path d={`M ${x0} ${y0} A ${r} ${r} 0 0 1 ${needleX} ${needleY}`} stroke={color} strokeWidth="14" fill="none" strokeLinecap="round"/>
+        <circle cx={cx} cy={cy} r="5" fill="#0B1420" />
+        <line x1={cx} y1={cy} x2={needleX} y2={needleY} stroke="#0B1420" strokeWidth="2.5" />
+        <text x={cx} y={cy - 22} textAnchor="middle" fontFamily="IBM Plex Mono" fontSize="26" fontWeight="600" fill="#0B1420">
+          {clamped.toFixed(1)}
+        </text>
+      </svg>
+      <div className="gauge-score">CREDIT INTEL SCORE / 100</div>
+    </div>
+  );
+}
+
+// ---------- app ----------
+function App() {
+  const [apiBase, setApiBase] = useState(() => localStorage.getItem("ci_api_base") || DEFAULT_API_BASE);
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("ci_api_key") || "");
+  const [form, setForm] = useState(buildDefaultForm());
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [recent, setRecent] = useState([]);
+
+  useEffect(() => { localStorage.setItem("ci_api_base", apiBase); }, [apiBase]);
+  useEffect(() => { localStorage.setItem("ci_api_key", apiKey); }, [apiKey]);
+
+  const updateField = (key, value) => setForm(f => ({ ...f, [key]: value }));
+
+  const fetchRecent = useCallback(async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/applications/recent?limit=8`, {
+        headers: { "X-API-Key": apiKey },
+      });
+      if (res.ok) setRecent(await res.json());
+    } catch (e) { /* silent - recent list is non-critical */ }
+  }, [apiBase, apiKey]);
+
+  useEffect(() => { fetchRecent(); }, [fetchRecent]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setLoading(true); setError(null); setResult(null);
+    const payload = { ...form };
+    if (!payload.account_id) delete payload.account_id;
+    // coerce numeric fields
+    FIELD_GROUPS.forEach(g => g.fields.forEach(([key, , type]) => {
+      if (type === "number") payload[key] = Number(payload[key]);
+    }));
+
+    try {
+      const res = await fetch(`${apiBase}/api/score`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}));
+        throw new Error(detail.detail || `Request failed (${res.status})`);
+      }
+      const data = await res.json();
+      setResult(data);
+      fetchRecent();
+    } catch (err) {
+      setError(err.message || "Could not reach the API. Is the backend running?");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="app">
+      <aside className="side">
+        <div>
+          <div className="brand-eyebrow">Synchrony · Hackathon Prototype</div>
+          <div className="brand-title">Next-Gen Credit<br/>Intelligence</div>
+          <div className="brand-sub">Real-time, explainable underwriting that fuses bureau-style credit data with behavioral signals for thin-file applicants.</div>
+
+          <div className="side-section cfg">
+            <div className="side-label">API Connection</div>
+            <label>Base URL</label>
+            <input value={apiBase} onChange={e => setApiBase(e.target.value)} />
+            <label>X-API-Key</label>
+            <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="from backend .env" />
+          </div>
+
+          <div className="side-section">
+            <div className="side-label">Recent Decisions</div>
+            {recent.length === 0 && <div style={{fontSize:12, color:"#5E7078"}}>None yet this session.</div>}
+            {recent.map(r => (
+              <div className="side-row" key={r.id}>
+                <span>{r.account_id || "—"}</span>
+                <b>{r.decision} · {r.credit_intel_score}</b>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="foot-note">Model: GradientBoosting, trained on Loan.csv (20k applications).<br/>Behavioral engine: bank_transactions_data_2.csv.</div>
+      </aside>
+
+      <main className="main">
+        <h1 className="page-title">Application Underwriting</h1>
+        <p className="page-sub">Enter applicant details below. Optionally attach a demo Account ID to fuse in behavioral / alternative-data signals from transaction history — useful for thin-file applicants without deep bureau data.</p>
+
+        <form onSubmit={submit}>
+          {FIELD_GROUPS.map(group => (
+            <div className="panel" key={group.title}>
+              <div className="panel-title">{group.title}</div>
+              <div className="grid">
+                {group.fields.map(([key, label, type, , options]) => (
+                  <div className="field" key={key}>
+                    <label>{label}</label>
+                    {type === "select" ? (
+                      <select value={form[key]} onChange={e => updateField(key, e.target.value)}>
+                        {options.map(o => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    ) : (
+                      <input type="number" step="any" value={form[key]} onChange={e => updateField(key, e.target.value)} />
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          <div className="panel">
+            <div className="panel-title">Behavioral Fusion (Optional)</div>
+            <div className="grid" style={{gridTemplateColumns: "1fr"}}>
+              <div className="field">
+                <label>Demo Account ID (from bank_transactions_data_2.csv, e.g. AC00128)</label>
+                <input type="text" value={form.account_id} onChange={e => updateField("account_id", e.target.value)} placeholder="Leave blank to score on traditional data only" />
+              </div>
+            </div>
+          </div>
+
+          <div className="submit-row">
+            <button className="btn" type="submit" disabled={loading}>{loading ? "Scoring…" : "Run Underwriting Score"}</button>
+            <button type="button" className="btn secondary" onClick={() => setForm(buildDefaultForm())}>Reset Form</button>
+            {error && <span className="error-msg">{error}</span>}
+          </div>
+        </form>
+
+        {result && (
+          <div className="panel" style={{marginTop:30}}>
+            <div className="panel-title">Underwriting Decision</div>
+            <div className="result-top">
+              <ScoreGauge score={result.fused_score ?? result.credit_intel_score} />
+              <div>
+                <div className={`decision-badge decision-${result.decision}`}>{result.decision}</div>
+                <div className="prob-line">
+                  approval_probability = {result.approval_probability} &nbsp;·&nbsp; model = {result.model_version}
+                  {result.fused_score != null && <> &nbsp;·&nbsp; fused_score = {result.fused_score} (80% traditional / 20% behavioral)</>}
+                </div>
+                <div className="explanation">{result.explanation}</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {result && (
+          <div className="panel">
+            <div className="panel-title">Top Contributing Factors</div>
+            {result.top_factors.map(f => (
+              <div className="factor-row" key={f.feature}>
+                <div className="factor-name">{f.feature}</div>
+                <div className="factor-bar-track">
+                  <div className={`factor-bar-fill ${f.direction}`} style={{width: `${Math.min(100, f.contribution * 400)}%`}} />
+                </div>
+                <div className={`factor-dir ${f.direction}`}>{f.direction === "increases_risk" ? "↑ risk" : "↓ risk"}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {result && result.behavioral_signals && (
+          <div className="panel">
+            <div className="panel-title">Behavioral Signals — {form.account_id}</div>
+            <div className="signals-grid">
+              {Object.entries(result.behavioral_signals).map(([k, v]) => (
+                <div className="signal-cell" key={k}>
+                  <div className="k">{k.replace(/_/g, " ")}</div>
+                  <div className="v">{v}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {!result && !error && (
+          <div className="empty-state">Fill in the form above and run a score to see the decision, explainability breakdown, and behavioral signals here.</div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
