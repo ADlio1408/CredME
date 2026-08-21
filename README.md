@@ -73,6 +73,13 @@ flowchart LR
 | `POST /predict`   | applicant | Credit-only assessment (approval probability, SHAP reasons)        |
 | `POST /behavior/check` | applicant | Behavioral-only assessment (anomaly score, risk signals)      |
 | `POST /decision`  | applicant | Unified decision — fuses credit + behavior + financial rule screen |
+| `POST /stream/transaction` | admin | Ingests one live transaction, scores it, updates that account's baseline in place, broadcasts it |
+| `WS /stream/live?api_key=...` | applicant or admin | Live feed of every ingested streamed transaction |
+
+The WebSocket takes its key as a query param (`?api_key=...`) since
+browser `WebSocket` clients can't set custom headers at handshake time; any
+valid applicant or admin key may connect to watch the feed, but only an
+admin key can write to it via `/stream/transaction`.
 
 ## Tech stack
 
@@ -224,6 +231,14 @@ python -m pytest backend/tests/ -v
   an `X-API-Key` header, checked against one of two role-scoped keys
   (`applicant` / `admin`) — not a single shared secret. Keys are read from
   environment variables, never hardcoded (see [Setup & run](#setup--run)).
+- **Real-time behavioral streaming:** `POST /stream/transaction` scores a
+  new transaction against the account's *current* baseline, then updates
+  that baseline exactly (recomputed from the account's full historical +
+  streamed amounts, not an approximation) so the next event for the same
+  account reflects it. Every ingested event is pushed live to
+  `WS /stream/live` subscribers. This is what makes "real-time" a genuine
+  property of the system rather than a static CSV snapshot recomputed once
+  at process startup.
 
 ## Known gaps / roadmap
 
@@ -233,8 +248,12 @@ scope for this submission:
 - **Persistence:** no database — application/decision history is not
   stored. A production version would persist to PostgreSQL and add an
   audit trail for every decision.
-- **True real-time behavioral data:** account baselines are computed from a
-  static CSV at startup rather than a live transaction stream.
+- **Real-time behavioral data:** implemented via `POST /stream/transaction`
+  + `WS /stream/live` — baselines now update in place per streamed event
+  (see below) rather than staying frozen at startup. What's still missing
+  for a production system: a real message broker (Kafka/Kinesis) feeding
+  this from core banking, and persistence of the live state (it currently
+  lives in the API process's memory and resets on restart).
 - **Additional alternative-data modalities:** only loan-application data and
   bank transactions are used today; utility/rent payment history, telecom
   data, etc. would strengthen the NTC use case further.

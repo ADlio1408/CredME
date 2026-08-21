@@ -270,3 +270,61 @@ def test_decision_rejects_wrong_api_key():
 def test_health_and_fairness_report_do_not_require_api_key():
     assert client.get("/health").status_code == 200
     assert client.get("/fairness/report").status_code == 200
+
+
+def test_applicant_key_cannot_ingest_stream():
+    transaction = base_transaction(AccountID="AC-STREAM-RBAC")
+    response = client.post(
+        "/stream/transaction", json=transaction, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 403
+
+
+def test_admin_key_can_ingest_stream_and_baseline_updates_live():
+    """
+    Real-time claim under test: streamed transactions for the
+    SAME new account update that account's baseline in place,
+    so repeated events see an incrementing transaction count —
+    not a static snapshot recomputed once at startup.
+    """
+    account_id = "AC-STREAM-LIVE-001"
+
+    first = client.post(
+        "/stream/transaction",
+        json=base_transaction(AccountID=account_id, TransactionAmount=100),
+        headers=ADMIN_HEADERS,
+    )
+    assert first.status_code == 200
+    first_body = first.json()
+    assert first_body["account_transaction_count_after_this_event"] == 1
+
+    second = client.post(
+        "/stream/transaction",
+        json=base_transaction(AccountID=account_id, TransactionAmount=120),
+        headers=ADMIN_HEADERS,
+    )
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body["account_transaction_count_after_this_event"] == 2
+
+
+def test_live_stream_broadcasts_ingested_transaction():
+    url = f"/stream/live?api_key={CREDME_API_KEY_APPLICANT}"
+    with client.websocket_connect(url) as websocket:
+        response = client.post(
+            "/stream/transaction",
+            json=base_transaction(AccountID="AC-STREAM-WS-001"),
+            headers=ADMIN_HEADERS,
+        )
+        assert response.status_code == 200
+
+        event = websocket.receive_json()
+        assert event["account_id"] == "AC-STREAM-WS-001"
+
+
+def test_live_stream_rejects_invalid_key():
+    from starlette.websockets import WebSocketDisconnect as _WSDisconnect
+
+    with pytest.raises(_WSDisconnect):
+        with client.websocket_connect("/stream/live?api_key=not-a-real-key"):
+            pass

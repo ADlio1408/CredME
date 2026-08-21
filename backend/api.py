@@ -1,10 +1,12 @@
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
 import os
 import re
+from collections import defaultdict
+
 import joblib
 import shap
 import numpy as np
@@ -436,6 +438,14 @@ account_location_counts = (
         ["AccountID", "Location"]
     )
     .size()
+    .to_dict()
+)
+
+
+account_historical_amounts = (
+    transaction_history
+    .groupby("AccountID")["TransactionAmount"]
+    .apply(list)
     .to_dict()
 )
 
@@ -2200,6 +2210,179 @@ def decision(
             "recommendation":
                 final_decision,
         },
+    }
+
+
+# ============================================================
+# REAL-TIME TRANSACTION STREAMING
+# ============================================================
+#
+# The behavioral baselines above (account_mean_amounts,
+# account_transaction_counts, etc.) are computed once from a
+# static CSV at startup. This section makes them genuinely
+# live: POST /stream/transaction ingests a new transaction,
+# scores it immediately against the CURRENT baseline, then
+# updates that account's baseline in place (exact recompute
+# over historical + streamed amounts, not an approximation) so
+# the next event for the same account reflects it. Every
+# ingested event is also pushed to connected WebSocket clients
+# in real time via GET /stream/live.
+#
+# This is admin-scoped: it represents an internal ingestion
+# pipeline (e.g. a core-banking event feed), not an endpoint
+# end users call directly.
+#
+# ============================================================
+
+live_transactions_by_account = defaultdict(list)
+
+
+class _LiveStreamManager:
+
+    def __init__(self):
+        self.connections = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.connections:
+            self.connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        stale = []
+        for connection in self.connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                stale.append(connection)
+        for connection in stale:
+            self.disconnect(connection)
+
+
+live_stream_manager = _LiveStreamManager()
+
+
+def _update_account_baseline(transaction: TransactionInput):
+    """
+    Exact incremental recompute of one account's baseline from
+    its full historical amounts (from the CSV) plus every
+    amount streamed in this process's lifetime so far —
+    NOT an approximation.
+    """
+
+    account_id = transaction.AccountID
+
+    live_transactions_by_account[account_id].append(
+        float(transaction.TransactionAmount)
+    )
+
+    combined_amounts = (
+        account_historical_amounts.get(account_id, [])
+        + live_transactions_by_account[account_id]
+    )
+
+    amounts_series = pd.Series(combined_amounts)
+
+    account_mean_amounts[account_id] = amounts_series.mean()
+
+    account_std_amounts[account_id] = (
+        amounts_series.std()
+        if len(amounts_series) > 1
+        else population_std_amount
+    )
+
+    account_transaction_counts[account_id] = len(combined_amounts)
+
+    account_last_transaction[account_id] = pd.Timestamp.now()
+
+    channel_key = (account_id, transaction.Channel)
+    account_channel_counts[channel_key] = (
+        account_channel_counts.get(channel_key, 0) + 1
+    )
+
+    device_key = (account_id, transaction.DeviceID)
+    account_device_counts[device_key] = (
+        account_device_counts.get(device_key, 0) + 1
+    )
+
+    location_key = (account_id, transaction.Location)
+    account_location_counts[location_key] = (
+        account_location_counts.get(location_key, 0) + 1
+    )
+
+    return len(combined_amounts)
+
+
+@app.websocket("/stream/live")
+async def stream_live(websocket: WebSocket):
+
+    api_key = websocket.query_params.get("api_key")
+
+    if api_key not in API_KEY_SCOPES:
+
+        await websocket.close(code=4401)
+        return
+
+    await live_stream_manager.connect(websocket)
+
+    try:
+        while True:
+            # This endpoint is push-only; block until the
+            # client disconnects rather than expecting input.
+            await websocket.receive_text()
+
+    except WebSocketDisconnect:
+        live_stream_manager.disconnect(websocket)
+
+
+@app.post(
+    "/stream/transaction",
+    dependencies=[Depends(require_scope("stream_ingest"))],
+)
+async def stream_transaction(transaction: TransactionInput):
+
+    X = prepare_behavior_dataframe(transaction)
+
+    X_scaled = behavior_scaler.transform(X)
+
+    prediction = behavior_model.predict(X_scaled)[0]
+
+    raw_score = behavior_model.decision_function(X_scaled)[0]
+
+    anomaly_detected = bool(prediction == -1)
+
+    anomaly_score = max(
+        0,
+        min(
+            100,
+            round(float((0.5 - raw_score) * 100), 2),
+        ),
+    )
+
+    signals = generate_behavior_signals(transaction, anomaly_detected)
+
+    account_transaction_count_after_this_event = (
+        _update_account_baseline(transaction)
+    )
+
+    event = {
+        "account_id": transaction.AccountID,
+        "transaction_amount": transaction.TransactionAmount,
+        "behavioral_anomaly_score": float(anomaly_score),
+        "anomaly_detected": anomaly_detected,
+        "signals": signals,
+        "account_transaction_count_after_this_event": (
+            account_transaction_count_after_this_event
+        ),
+    }
+
+    await live_stream_manager.broadcast(event)
+
+    return {
+        **event,
+        "connected_live_clients": len(live_stream_manager.connections),
     }
 
 
