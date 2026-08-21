@@ -12,6 +12,8 @@ import shap
 import numpy as np
 import pandas as pd
 
+from backend.llm_layer import generate_narrative_explanation
+
 
 # ============================================================
 # CREDME API
@@ -2383,6 +2385,36 @@ async def stream_transaction(transaction: TransactionInput):
     return {
         **event,
         "connected_live_clients": len(live_stream_manager.connections),
+    }
+
+
+# ============================================================
+# LLM NARRATIVE EXPLANATION
+# ============================================================
+#
+# Runs the same deterministic /decision logic, then rephrases
+# the result into a short applicant-facing narrative via
+# backend/llm_layer.py. Admin-scoped: this is a reviewer/ops
+# tool for drafting applicant-facing copy, not something the
+# frontend calls directly today.
+#
+# ============================================================
+
+@app.post(
+    "/explain/narrative",
+    dependencies=[Depends(require_scope("narrative"))],
+)
+def explain_narrative(
+    request: DecisionRequest
+):
+
+    decision_result = decision(request)
+
+    narrative = generate_narrative_explanation(decision_result)
+
+    return {
+        **decision_result,
+        "narrative_explanation": narrative,
     }
 
 

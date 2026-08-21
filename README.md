@@ -75,6 +75,7 @@ flowchart LR
 | `POST /decision`  | applicant | Unified decision — fuses credit + behavior + financial rule screen |
 | `POST /stream/transaction` | admin | Ingests one live transaction, scores it, updates that account's baseline in place, broadcasts it |
 | `WS /stream/live?api_key=...` | applicant or admin | Live feed of every ingested streamed transaction |
+| `POST /explain/narrative` | admin | Runs `/decision`, then rephrases the result into a short applicant-facing narrative |
 
 The WebSocket takes its key as a query param (`?api_key=...`) since
 browser `WebSocket` clients can't set custom headers at handshake time; any
@@ -91,6 +92,34 @@ admin key can write to it via `/stream/transaction`.
   persisted as `.joblib` (`models/`)
 - **Containerization:** Docker + docker-compose (`backend/Dockerfile`,
   `frontend/Dockerfile`, `docker-compose.yml`)
+- **LLM layer (scaffold):** Anthropic SDK integration for applicant-facing
+  narrative generation (`backend/llm_layer.py`) — wired, guardrailed, and
+  disabled by default (see below)
+
+## AI layer: narrative explanations (LLM scaffold)
+
+`POST /explain/narrative` runs the same deterministic `/decision` pipeline
+and then asks an LLM to rephrase the already-made decision into a short,
+plain-English explanation for the applicant. The LLM never makes or
+influences the decision — it only rephrases a result that SHAP + rule-based
+logic already produced.
+
+- **Prompt template:** constrained to the decision's own fields only (see
+  `PROMPT_TEMPLATE` in `backend/llm_layer.py`); the model is explicitly
+  instructed not to invent reasons, not to reference protected
+  characteristics, and not to imply the decision could change on request.
+- **Guardrails:** output is scanned for protected-characteristic language
+  (race, gender, religion, disability, etc.) before being returned; a
+  violation swaps in a safe, generic fallback narrative instead of the
+  generated text, and the violation is reported in the response
+  (`guardrail_violations`) rather than silently hidden.
+- **No live calls by default:** `CREDME_LLM_API_KEY` is unset in this
+  environment on purpose. Without it, the endpoint returns a deterministic,
+  template-based narrative built from the same fields the prompt would use
+  (`"source": "template_fallback"`) — the integration code is real and
+  tested, but nothing is sent to a model or billed unless a key is
+  explicitly configured. Set `CREDME_LLM_API_KEY` (and optionally
+  `CREDME_LLM_MODEL`, default `claude-sonnet-5`) to enable real calls.
 
 ## Model performance
 
@@ -249,11 +278,12 @@ scope for this submission:
   stored. A production version would persist to PostgreSQL and add an
   audit trail for every decision.
 - **Real-time behavioral data:** implemented via `POST /stream/transaction`
-  + `WS /stream/live` — baselines now update in place per streamed event
-  (see below) rather than staying frozen at startup. What's still missing
-  for a production system: a real message broker (Kafka/Kinesis) feeding
-  this from core banking, and persistence of the live state (it currently
-  lives in the API process's memory and resets on restart).
+  + `WS /stream/live` (see [Architecture](#architecture)) — baselines now
+  update in place per streamed event rather than staying frozen at
+  startup. What's still missing for a production system: a real message
+  broker (Kafka/Kinesis) feeding this from core banking, and persistence
+  of the live state (it currently lives in the API process's memory and
+  resets on restart).
 - **Additional alternative-data modalities:** only loan-application data and
   bank transactions are used today; utility/rent payment history, telecom
   data, etc. would strengthen the NTC use case further.
@@ -263,6 +293,11 @@ scope for this submission:
 - **Per-user identity:** auth is now role-scoped (`applicant` / `admin`),
   not a single shared secret — but both are still static keys, not
   individual user accounts. No login system, no per-user audit trail.
+- **Live LLM calls:** the narrative-explanation layer
+  (see [AI layer](#ai-layer-narrative-explanations-llm-scaffold)) is fully
+  wired but runs in template-fallback mode — `CREDME_LLM_API_KEY` is
+  intentionally unset in this environment, so no real model call has been
+  made or billed.
 - **Fairness remediation:** the audit identifies disparate impact by age;
   it does not yet implement a remediation (e.g. reweighing, threshold
   adjustment per group, or targeted data collection) — that's the natural

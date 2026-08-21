@@ -322,6 +322,38 @@ def test_live_stream_broadcasts_ingested_transaction():
         assert event["account_id"] == "AC-STREAM-WS-001"
 
 
+def test_narrative_requires_admin_scope():
+    payload = {
+        "application": base_application(),
+        "transaction": base_transaction(),
+    }
+    response = client.post(
+        "/explain/narrative", json=payload, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 403
+
+
+def test_narrative_uses_template_fallback_without_llm_key():
+    """
+    CREDME_LLM_API_KEY is intentionally unset in this test
+    environment. The narrative layer must fall back to the
+    deterministic template rather than attempting a live call.
+    """
+    payload = {
+        "application": base_application(),
+        "transaction": base_transaction(),
+    }
+    response = client.post(
+        "/explain/narrative", json=payload, headers=ADMIN_HEADERS
+    )
+    assert response.status_code == 200
+    body = response.json()
+    narrative = body["narrative_explanation"]
+    assert narrative["source"] == "template_fallback"
+    assert len(narrative["narrative"]) > 0
+    assert narrative["guardrail_violations"] == []
+
+
 def test_live_stream_rejects_invalid_key():
     from starlette.websockets import WebSocketDisconnect as _WSDisconnect
 
