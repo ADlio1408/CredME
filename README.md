@@ -66,12 +66,13 @@ flowchart LR
 
 **Endpoints**
 
-| Endpoint          | Purpose                                                            |
-|-------------------|---------------------------------------------------------------------|
-| `GET /health`     | Liveness + model-load check                                        |
-| `POST /predict`   | Credit-only assessment (approval probability, SHAP reasons)        |
-| `POST /behavior/check` | Behavioral-only assessment (anomaly score, risk signals)      |
-| `POST /decision`  | Unified decision — fuses credit + behavior + financial rule screen |
+| Endpoint          | Auth required | Purpose                                                            |
+|-------------------|:---:|---------------------------------------------------------------------|
+| `GET /health`     | No | Liveness + model-load check                                        |
+| `GET /fairness/report` | No | Pre-computed disparate-impact audit of the credit model      |
+| `POST /predict`   | Yes | Credit-only assessment (approval probability, SHAP reasons)        |
+| `POST /behavior/check` | Yes | Behavioral-only assessment (anomaly score, risk signals)      |
+| `POST /decision`  | Yes | Unified decision — fuses credit + behavior + financial rule screen |
 
 ## Tech stack
 
@@ -103,6 +104,16 @@ Re-run `python backend/train_credit_model.py` or
 `python backend/behavior_model.py` to regenerate these numbers and the
 saved model artifacts.
 
+**Fairness audit:** `python backend/fairness_audit.py` screens the trained
+credit model's approval decisions for disparate impact across Age and
+Marital Status using the four-fifths rule, and writes
+`models/fairness_report.json` (served live at `GET /fairness/report`). The
+current run flags younger applicants (`<25`, `25-39`) for disparate impact
+— but predicted approval rates track actual/historical approval rates
+closely per group, indicating the model reflects a pattern already present
+in the training data rather than amplifying it. See
+[Known gaps / roadmap](#known-gaps--roadmap) for what that implies.
+
 ## Setup & run
 
 ### Backend
@@ -112,22 +123,32 @@ cd CredMe
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
+cp backend/.env.example backend/.env   # then edit CREDME_API_KEY
+export CREDME_API_KEY=changeme          # or use a .env loader of your choice
 uvicorn backend.api:app --reload --port 4000
 ```
 
 The API loads model artifacts from `models/` and reference transaction data
 from `data/` on startup — no database required for this prototype.
 
+`POST /predict`, `POST /behavior/check`, and `POST /decision` require an
+`X-API-Key` header matching `CREDME_API_KEY`. If the env var isn't set, the
+API falls back to a published development key (`credme-dev-local-key`) so
+the prototype still runs out of the box locally — **set a real key before
+any shared or public deployment.**
+
 ### Frontend
 
 ```bash
 cd frontend
+cp .env.example .env.local   # optional locally — must match backend's key if set
 npm install
 npm run dev
 ```
 
 The frontend expects the API at `http://127.0.0.1:4000` (see
-`frontend/src/App.jsx`).
+`frontend/src/App.jsx`) and sends `VITE_API_KEY` as the `X-API-Key` header,
+defaulting to the same development fallback key as the backend.
 
 ### Tests
 
@@ -150,6 +171,19 @@ python -m pytest backend/tests/ -v
   was made without traditional credit history.
 - The system returns a **recommendation**, not an autonomous decision —
   `REVIEW` is the deliberate default whenever signals are mixed.
+- **Fairness audit:** `GET /fairness/report` exposes a four-fifths-rule
+  disparate-impact screen of the credit model across Age and Marital Status
+  (see `backend/fairness_audit.py`). This is a real, run-against-the-shipped-
+  model audit, not a placeholder — it currently flags applicants under 25
+  and 25-39 for disparate impact, while showing the model's predicted
+  approval rates closely track actual historical approval rates per group.
+  That distinction matters: it points to a **training-data representativeness
+  issue**, not the model independently inventing new bias — the honest fix is
+  collecting more/better data for younger applicants, not just tweaking the
+  model.
+- **API authentication:** `/predict`, `/behavior/check`, and `/decision`
+  require an `X-API-Key` header; the key is read from an environment
+  variable, never hardcoded (see [Setup & run](#setup--run)).
 
 ## Known gaps / roadmap
 
@@ -164,10 +198,13 @@ scope for this submission:
 - **Additional alternative-data modalities:** only loan-application data and
   bank transactions are used today; utility/rent payment history, telecom
   data, etc. would strengthen the NTC use case further.
-- **AuthN/AuthZ:** no authentication on the API — needed before any
-  non-local deployment.
+- **Authorization beyond a shared API key:** current auth proves the caller
+  holds a valid key; it does not implement per-user identity, roles, or
+  scopes (no login system fronts this prototype).
 - **LLM layer:** no generative model is used; explainability is handled
   entirely via SHAP + rule-based reasoning, which is deterministic and
   auditable but doesn't produce free-text narrative explanations.
-- **Fairness/bias audit:** no demographic-parity or disparate-impact
-  analysis has been run on model outputs yet.
+- **Fairness remediation:** the audit identifies disparate impact by age;
+  it does not yet implement a remediation (e.g. reweighing, threshold
+  adjustment per group, or targeted data collection) — that's the natural
+  next step once the flag is confirmed against a larger/real dataset.

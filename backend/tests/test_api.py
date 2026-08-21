@@ -10,9 +10,11 @@ tier maps to the expected decision family.
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.api import app
+from backend.api import CREDME_API_KEY, app
 
 client = TestClient(app)
+
+AUTH_HEADERS = {"X-API-Key": CREDME_API_KEY}
 
 
 def base_application(**overrides):
@@ -79,7 +81,9 @@ def test_health():
 
 
 def test_predict_returns_expected_shape():
-    response = client.post("/predict", json=base_application())
+    response = client.post(
+        "/predict", json=base_application(), headers=AUTH_HEADERS
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["decision"] in {"APPROVE", "REVIEW", "DECLINE"}
@@ -106,6 +110,7 @@ def test_thin_file_never_auto_declines():
     response = client.post(
         "/decision",
         json={"application": application, "transaction": transaction},
+        headers=AUTH_HEADERS,
     )
 
     assert response.status_code == 200
@@ -126,6 +131,7 @@ def test_thin_file_with_severe_financial_risk_goes_to_review_not_decline():
     response = client.post(
         "/decision",
         json={"application": application, "transaction": transaction},
+        headers=AUTH_HEADERS,
     )
 
     assert response.status_code == 200
@@ -147,6 +153,7 @@ def test_weak_credit_declines():
     response = client.post(
         "/decision",
         json={"application": application, "transaction": transaction},
+        headers=AUTH_HEADERS,
     )
 
     assert response.status_code == 200
@@ -158,7 +165,9 @@ def test_weak_credit_declines():
 def test_behavior_check_flags_amount_exceeding_balance():
     transaction = base_transaction(TransactionAmount=9000, AccountBalance=1000)
 
-    response = client.post("/behavior/check", json=transaction)
+    response = client.post(
+        "/behavior/check", json=transaction, headers=AUTH_HEADERS
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -170,7 +179,9 @@ def test_behavior_check_flags_amount_exceeding_balance():
 def test_behavior_check_high_login_attempts_flagged():
     transaction = base_transaction(LoginAttempts=6)
 
-    response = client.post("/behavior/check", json=transaction)
+    response = client.post(
+        "/behavior/check", json=transaction, headers=AUTH_HEADERS
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -191,6 +202,7 @@ def test_weak_payment_history_is_flagged():
     response = client.post(
         "/decision",
         json={"application": application, "transaction": transaction},
+        headers=AUTH_HEADERS,
     )
 
     assert response.status_code == 200
@@ -205,6 +217,7 @@ def test_typical_payment_history_not_flagged():
     response = client.post(
         "/decision",
         json={"application": application, "transaction": transaction},
+        headers=AUTH_HEADERS,
     )
 
     assert response.status_code == 200
@@ -212,9 +225,47 @@ def test_typical_payment_history_not_flagged():
     assert "Weak payment history" not in body["financial_concerns"]
 
 
+def test_fairness_report_available():
+    response = client.get("/fairness/report")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["method"] == "four_fifths_rule"
+    assert "by_age_group" in body
+    assert "by_marital_status" in body
+
+
 def test_decision_rejects_invalid_payload():
     response = client.post(
         "/decision",
         json={"application": {}, "transaction": base_transaction()},
+        headers=AUTH_HEADERS,
     )
     assert response.status_code == 422
+
+
+def test_decision_requires_api_key():
+    response = client.post(
+        "/decision",
+        json={
+            "application": base_application(),
+            "transaction": base_transaction(),
+        },
+    )
+    assert response.status_code == 401
+
+
+def test_decision_rejects_wrong_api_key():
+    response = client.post(
+        "/decision",
+        json={
+            "application": base_application(),
+            "transaction": base_transaction(),
+        },
+        headers={"X-API-Key": "not-the-right-key"},
+    )
+    assert response.status_code == 401
+
+
+def test_health_and_fairness_report_do_not_require_api_key():
+    assert client.get("/health").status_code == 200
+    assert client.get("/fairness/report").status_code == 200

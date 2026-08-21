@@ -1,0 +1,82 @@
+{
+  "method": "four_fifths_rule",
+  "description": "Screens the trained credit model's approval decisions for disparate impact across Age and Marital Status (ECOA-protected bases present in the training data). A group's disparate_impact_ratio should be >= 0.80; below that, the group is flagged for review. This is a screen, not a legal determination.",
+  "test_set_size": 4000,
+  "by_age_group": [
+    {
+      "AgeGroup": "25-39",
+      "n": 1612,
+      "predicted_approval_rate": 0.1972704715,
+      "actual_approval_rate": 0.199751861,
+      "avg_approval_probability": 0.2025755346,
+      "disparate_impact_ratio": 0.5829784082,
+      "passes_four_fifths_rule": false
+    },
+    {
+      "AgeGroup": "40-59",
+      "n": 1802,
+      "predicted_approval_rate": 0.2730299667,
+      "actual_approval_rate": 0.2841287458,
+      "avg_approval_probability": 0.280557096,
+      "disparate_impact_ratio": 0.8068646777,
+      "passes_four_fifths_rule": true
+    },
+    {
+      "AgeGroup": "60+",
+      "n": 198,
+      "predicted_approval_rate": 0.3383838384,
+      "actual_approval_rate": 0.3585858586,
+      "avg_approval_probability": 0.3356898129,
+      "disparate_impact_ratio": 1.0,
+      "passes_four_fifths_rule": true
+    },
+    {
+      "AgeGroup": "<25",
+      "n": 388,
+      "predicted_approval_rate": 0.118556701,
+      "actual_approval_rate": 0.131443299,
+      "avg_approval_probability": 0.1324383765,
+      "disparate_impact_ratio": 0.3503615941,
+      "passes_four_fifths_rule": false
+    }
+  ],
+  "by_marital_status": [
+    {
+      "MaritalStatus": "Divorced",
+      "n": 540,
+      "predicted_approval_rate": 0.2333333333,
+      "actual_approval_rate": 0.2296296296,
+      "avg_approval_probability": 0.2435369641,
+      "disparate_impact_ratio": 0.9922755741,
+      "passes_four_fifths_rule": true
+    },
+    {
+      "MaritalStatus": "Married",
+      "n": 2037,
+      "predicted_approval_rate": 0.23514973,
+      "actual_approval_rate": 0.2400589102,
+      "avg_approval_probability": 0.2403961867,
+      "disparate_impact_ratio": 1.0,
+      "passes_four_fifths_rule": true
+    },
+    {
+      "MaritalStatus": "Single",
+      "n": 1251,
+      "predicted_approval_rate": 0.2246203038,
+      "actual_approval_rate": 0.2414068745,
+      "avg_approval_probability": 0.2320908457,
+      "disparate_impact_ratio": 0.9552224609,
+      "passes_four_fifths_rule": true
+    },
+    {
+      "MaritalStatus": "Widowed",
+      "n": 172,
+      "predicted_approval_rate": 0.2151162791,
+      "actual_approval_rate": 0.238372093,
+      "avg_approval_probability": 0.2234049886,
+      "disparate_impact_ratio": 0.9148055542,
+      "passes_four_fifths_rule": true
+    }
+  ],
+  "any_group_flagged": true
+}

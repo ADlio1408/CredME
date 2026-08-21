@@ -1,6 +1,8 @@
 import { useState } from "react";
 import "./App.css";
 
+const API_KEY = import.meta.env.VITE_API_KEY || "credme-dev-local-key";
+
 const initialApplication = {
   Age: 32,
   AnnualIncome: 75000,
@@ -79,6 +81,7 @@ function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-API-Key": API_KEY,
         },
         body: JSON.stringify({
           application: {
