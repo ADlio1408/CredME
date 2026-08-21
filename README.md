@@ -163,16 +163,19 @@ in the training data rather than amplifying it. See
 
 ## Setup & run
 
-### Backend
+### 1. Clone Repository
 
 ```bash
-cd CredMe
+git clone https://github.com/ADlio1408/CredME.git
+cd CredME
+```
+
+### 2. Backend
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
-cp backend/.env.example backend/.env   # then edit the two API keys
-export CREDME_API_KEY_APPLICANT=changeme-applicant
-export CREDME_API_KEY_ADMIN=changeme-admin
 uvicorn backend.api:app --reload --port 4000
 ```
 
