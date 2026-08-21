@@ -853,7 +853,7 @@ function App() {
                       }
                     >
                       {reason.impact >= 0 ? "+" : ""}
-                      {reason.impact}
+                      {reason.impact}%
                     </div>
                   </div>
                 ))}
