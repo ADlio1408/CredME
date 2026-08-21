@@ -1,0 +1,20 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      CREDME_API_KEY: ${CREDME_API_KEY:-credme-dev-local-key}
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_KEY: ${CREDME_API_KEY:-credme-dev-local-key}
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend

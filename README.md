@@ -82,6 +82,8 @@ flowchart LR
   anomaly detection), SHAP (explainability)
 - **Data:** CSV-based training/reference data (`data/`), trained artifacts
   persisted as `.joblib` (`models/`)
+- **Containerization:** Docker + docker-compose (`backend/Dockerfile`,
+  `frontend/Dockerfile`, `docker-compose.yml`)
 
 ## Model performance
 
@@ -150,6 +152,26 @@ The frontend expects the API at `http://127.0.0.1:4000` (see
 `frontend/src/App.jsx`) and sends `VITE_API_KEY` as the `X-API-Key` header,
 defaulting to the same development fallback key as the backend.
 
+### Docker (both services)
+
+```bash
+docker compose up --build
+```
+
+- Backend: `http://localhost:4000`
+- Frontend: `http://localhost:5173`
+
+Set `CREDME_API_KEY` in your shell (or a root-level `.env` file) before
+running to use a real key instead of the development fallback:
+
+```bash
+CREDME_API_KEY=your-real-key docker compose up --build
+```
+
+Note: the frontend's API key is baked in at build time (Vite env vars are
+compile-time), so changing `CREDME_API_KEY` requires rebuilding the
+frontend image, not just restarting the container.
+
 ### Tests
 
 ```bash
@@ -198,6 +220,9 @@ scope for this submission:
 - **Additional alternative-data modalities:** only loan-application data and
   bank transactions are used today; utility/rent payment history, telecom
   data, etc. would strengthen the NTC use case further.
+- **Cloud deployment:** the app is containerized (Docker + docker-compose)
+  but not deployed anywhere — no AWS/cloud hosting, no monitoring/logging
+  infrastructure.
 - **Authorization beyond a shared API key:** current auth proves the caller
   holds a valid key; it does not implement per-user identity, roles, or
   scopes (no login system fronts this prototype).
