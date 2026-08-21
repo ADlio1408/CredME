@@ -172,6 +172,10 @@ Note: the frontend's API key is baked in at build time (Vite env vars are
 compile-time), so changing `CREDME_API_KEY` requires rebuilding the
 frontend image, not just restarting the container.
 
+Verified: `docker compose build` + `docker compose up` — both containers
+start cleanly and `/health`, `/fairness/report`, an authenticated
+`/decision` call, and the nginx-served frontend all respond correctly.
+
 ### Tests
 
 ```bash
