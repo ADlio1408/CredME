@@ -281,39 +281,3 @@ python -m pytest backend/tests/ -v
   property of the system rather than a static CSV snapshot recomputed once
   at process startup.
 
-## Known gaps / roadmap
-
-This is a hackathon prototype, not a production system. Explicitly out of
-scope for this submission:
-
-- **Persistence:** no database — application/decision history is not
-  stored. A production version would persist to PostgreSQL and add an
-  audit trail for every decision.
-- **Real-time behavioral data:** implemented via `POST /stream/transaction`
-  + `WS /stream/live` (see [Architecture](#architecture)) — baselines now
-  update in place per streamed event rather than staying frozen at
-  startup. What's still missing for a production system: a real message
-  broker (Kafka/Kinesis) feeding this from core banking, and persistence
-  of the live state (it currently lives in the API process's memory and
-  resets on restart).
-- **Alternative data is illustrative, not sourced:** `RentPaymentConsistency`
-  (see below) demonstrates how a real alternative-data signal would plug
-  into the thin-file path, but it's a form field, not a real landlord/
-  telecom/utility data integration. Additional real modalities (telecom
-  payment history, utility data beyond what's already modeled, etc.) would
-  strengthen the NTC use case further.
-- **Cloud deployment:** the app is containerized (Docker + docker-compose)
-  but not deployed anywhere — no AWS/cloud hosting, no monitoring/logging
-  infrastructure.
-- **Per-user identity:** auth is now role-scoped (`applicant` / `admin`),
-  not a single shared secret — but both are still static keys, not
-  individual user accounts. No login system, no per-user audit trail.
-- **Live LLM calls:** the narrative-explanation layer
-  (see [AI layer](#ai-layer-narrative-explanations-llm-scaffold)) is fully
-  wired but runs in template-fallback mode — `CREDME_LLM_API_KEY` is
-  intentionally unset in this environment, so no real model call has been
-  made or billed.
-- **Fairness remediation:** the audit identifies disparate impact by age;
-  it does not yet implement a remediation (e.g. reweighing, threshold
-  adjustment per group, or targeted data collection) — that's the natural
-  next step once the flag is confirmed against a larger/real dataset.
