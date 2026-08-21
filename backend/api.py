@@ -59,35 +59,65 @@ app.add_middleware(
 
 
 # ============================================================
-# API KEY AUTH
+# API KEY AUTH — ROLE / SCOPE BASED
 # ============================================================
 #
-# The credit/behavioral endpoints require an X-API-Key header.
-# The key is read from the CREDME_API_KEY environment variable
-# — never hardcoded. If it is not set, the API falls back to a
-# published, clearly-labeled development key so the prototype
-# still runs out of the box for local demos; this fallback is
-# NOT suitable for any shared or public deployment.
+# Two roles, each a distinct API key mapped to an explicit set
+# of scopes:
+#
+#   - "applicant" — the public-facing role the frontend uses.
+#     Can request assessments, nothing else.
+#
+#   - "admin"     — internal/reviewer role. Everything the
+#     applicant role can do, plus operator-only endpoints
+#     (live transaction ingestion, LLM narrative generation).
+#
+# Keys are read from environment variables — never hardcoded.
+# If unset, the API falls back to published, clearly-labeled
+# development keys so the prototype still runs out of the box
+# locally; these fallbacks are NOT suitable for any shared or
+# public deployment.
 #
 # ============================================================
 
 API_KEY_HEADER_NAME = "X-API-Key"
 
-DEV_FALLBACK_API_KEY = "credme-dev-local-key"
+DEV_FALLBACK_APPLICANT_KEY = "credme-dev-applicant-key"
 
-CREDME_API_KEY = os.environ.get(
-    "CREDME_API_KEY",
-    DEV_FALLBACK_API_KEY,
+DEV_FALLBACK_ADMIN_KEY = "credme-dev-admin-key"
+
+APPLICANT_SCOPES = {"predict", "behavior_check", "decision"}
+
+ADMIN_SCOPES = APPLICANT_SCOPES | {"stream_ingest", "narrative"}
+
+CREDME_API_KEY_APPLICANT = os.environ.get(
+    "CREDME_API_KEY_APPLICANT",
+    DEV_FALLBACK_APPLICANT_KEY,
 )
 
-if CREDME_API_KEY == DEV_FALLBACK_API_KEY:
+CREDME_API_KEY_ADMIN = os.environ.get(
+    "CREDME_API_KEY_ADMIN",
+    DEV_FALLBACK_ADMIN_KEY,
+)
+
+if CREDME_API_KEY_APPLICANT == DEV_FALLBACK_APPLICANT_KEY:
 
     print(
-        "WARNING: CREDME_API_KEY is not set. Using the "
-        "published development fallback key. Set "
-        "CREDME_API_KEY before deploying anywhere shared "
-        "or public."
+        "WARNING: CREDME_API_KEY_APPLICANT is not set. Using "
+        "the published development fallback key."
     )
+
+if CREDME_API_KEY_ADMIN == DEV_FALLBACK_ADMIN_KEY:
+
+    print(
+        "WARNING: CREDME_API_KEY_ADMIN is not set. Using the "
+        "published development fallback key."
+    )
+
+API_KEY_SCOPES = {
+    CREDME_API_KEY_APPLICANT: APPLICANT_SCOPES,
+    CREDME_API_KEY_ADMIN: ADMIN_SCOPES,
+}
 
 _api_key_header = APIKeyHeader(
     name=API_KEY_HEADER_NAME,
@@ -95,21 +125,38 @@ _api_key_header = APIKeyHeader(
 )
 
 
-def require_api_key(
-    api_key: str = Depends(_api_key_header)
-):
+def require_scope(scope_name):
 
-    if not api_key or api_key != CREDME_API_KEY:
+    def _dependency(
+        api_key: str = Depends(_api_key_header)
+    ):
 
-        raise HTTPException(
-            status_code=401,
-            detail=(
-                "Missing or invalid API key. "
-                f"Provide the '{API_KEY_HEADER_NAME}' header."
-            ),
-        )
+        scopes = API_KEY_SCOPES.get(api_key)
 
-    return api_key
+        if scopes is None:
+
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "Missing or invalid API key. "
+                    f"Provide the '{API_KEY_HEADER_NAME}' "
+                    "header."
+                ),
+            )
+
+        if scope_name not in scopes:
+
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "This API key does not have the "
+                    f"'{scope_name}' scope."
+                ),
+            )
+
+        return api_key
+
+    return _dependency
 
 
 # ============================================================
@@ -822,7 +869,7 @@ def get_fairness_report():
 
 @app.post(
     "/predict",
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_scope("predict"))],
 )
 def predict(
     application: LoanApplication
@@ -1354,7 +1401,7 @@ def generate_behavior_signals(
 
 @app.post(
     "/behavior/check",
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_scope("behavior_check"))],
 )
 def check_behavior(
     transaction: TransactionInput
@@ -1488,7 +1535,7 @@ def check_behavior(
 
 @app.post(
     "/decision",
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_scope("decision"))],
 )
 def decision(
     request: DecisionRequest

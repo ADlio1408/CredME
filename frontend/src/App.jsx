@@ -1,7 +1,7 @@
 import { useState } from "react";
 import "./App.css";
 
-const API_KEY = import.meta.env.VITE_API_KEY || "credme-dev-local-key";
+const API_KEY = import.meta.env.VITE_API_KEY || "credme-dev-applicant-key";
 
 const initialApplication = {
   Age: 32,

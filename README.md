@@ -66,13 +66,13 @@ flowchart LR
 
 **Endpoints**
 
-| Endpoint          | Auth required | Purpose                                                            |
+| Endpoint          | Role required | Purpose                                                            |
 |-------------------|:---:|---------------------------------------------------------------------|
-| `GET /health`     | No | Liveness + model-load check                                        |
-| `GET /fairness/report` | No | Pre-computed disparate-impact audit of the credit model      |
-| `POST /predict`   | Yes | Credit-only assessment (approval probability, SHAP reasons)        |
-| `POST /behavior/check` | Yes | Behavioral-only assessment (anomaly score, risk signals)      |
-| `POST /decision`  | Yes | Unified decision — fuses credit + behavior + financial rule screen |
+| `GET /health`     | none | Liveness + model-load check                                        |
+| `GET /fairness/report` | none | Pre-computed disparate-impact audit of the credit model      |
+| `POST /predict`   | applicant | Credit-only assessment (approval probability, SHAP reasons)        |
+| `POST /behavior/check` | applicant | Behavioral-only assessment (anomaly score, risk signals)      |
+| `POST /decision`  | applicant | Unified decision — fuses credit + behavior + financial rule screen |
 
 ## Tech stack
 
@@ -125,19 +125,30 @@ cd CredMe
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
-cp backend/.env.example backend/.env   # then edit CREDME_API_KEY
-export CREDME_API_KEY=changeme          # or use a .env loader of your choice
+cp backend/.env.example backend/.env   # then edit the two API keys
+export CREDME_API_KEY_APPLICANT=changeme-applicant
+export CREDME_API_KEY_ADMIN=changeme-admin
 uvicorn backend.api:app --reload --port 4000
 ```
 
 The API loads model artifacts from `models/` and reference transaction data
-from `data/` on startup — no database required for this prototype.
+from `data/` on startup — no database required for the core decisioning
+endpoints (the optional semantic-search feature does use one — see
+[Semantic case search](#semantic-case-search-pgvector)).
 
-`POST /predict`, `POST /behavior/check`, and `POST /decision` require an
-`X-API-Key` header matching `CREDME_API_KEY`. If the env var isn't set, the
-API falls back to a published development key (`credme-dev-local-key`) so
-the prototype still runs out of the box locally — **set a real key before
-any shared or public deployment.**
+Every business endpoint requires an `X-API-Key` header, checked against one
+of two role-scoped keys:
+
+| Role | Env var | Can call |
+|---|---|---|
+| `applicant` | `CREDME_API_KEY_APPLICANT` | `/predict`, `/behavior/check`, `/decision` |
+| `admin` | `CREDME_API_KEY_ADMIN` | everything above, plus `/stream/transaction` and `/explain/narrative` |
+
+If either env var is unset, the API falls back to a published development
+key (`credme-dev-applicant-key` / `credme-dev-admin-key`) so the prototype
+still runs out of the box locally — **set real keys before any shared or
+public deployment.** A request with an applicant key to an admin-only
+endpoint gets `403`, not `401` — the key is valid, it just lacks the scope.
 
 ### Frontend
 
@@ -161,16 +172,18 @@ docker compose up --build
 - Backend: `http://localhost:4000`
 - Frontend: `http://localhost:5173`
 
-Set `CREDME_API_KEY` in your shell (or a root-level `.env` file) before
-running to use a real key instead of the development fallback:
+Set `CREDME_API_KEY_APPLICANT` / `CREDME_API_KEY_ADMIN` in your shell (or a
+root-level `.env` file) before running to use real keys instead of the
+development fallbacks:
 
 ```bash
-CREDME_API_KEY=your-real-key docker compose up --build
+CREDME_API_KEY_APPLICANT=your-real-key CREDME_API_KEY_ADMIN=your-other-real-key \
+  docker compose up --build
 ```
 
 Note: the frontend's API key is baked in at build time (Vite env vars are
-compile-time), so changing `CREDME_API_KEY` requires rebuilding the
-frontend image, not just restarting the container.
+compile-time), so changing `CREDME_API_KEY_APPLICANT` requires rebuilding
+the frontend image, not just restarting the container.
 
 Verified: `docker compose build` + `docker compose up` — both containers
 start cleanly and `/health`, `/fairness/report`, an authenticated
@@ -207,9 +220,10 @@ python -m pytest backend/tests/ -v
   issue**, not the model independently inventing new bias — the honest fix is
   collecting more/better data for younger applicants, not just tweaking the
   model.
-- **API authentication:** `/predict`, `/behavior/check`, and `/decision`
-  require an `X-API-Key` header; the key is read from an environment
-  variable, never hardcoded (see [Setup & run](#setup--run)).
+- **API authentication & authorization:** every business endpoint requires
+  an `X-API-Key` header, checked against one of two role-scoped keys
+  (`applicant` / `admin`) — not a single shared secret. Keys are read from
+  environment variables, never hardcoded (see [Setup & run](#setup--run)).
 
 ## Known gaps / roadmap
 
@@ -227,12 +241,9 @@ scope for this submission:
 - **Cloud deployment:** the app is containerized (Docker + docker-compose)
   but not deployed anywhere — no AWS/cloud hosting, no monitoring/logging
   infrastructure.
-- **Authorization beyond a shared API key:** current auth proves the caller
-  holds a valid key; it does not implement per-user identity, roles, or
-  scopes (no login system fronts this prototype).
-- **LLM layer:** no generative model is used; explainability is handled
-  entirely via SHAP + rule-based reasoning, which is deterministic and
-  auditable but doesn't produce free-text narrative explanations.
+- **Per-user identity:** auth is now role-scoped (`applicant` / `admin`),
+  not a single shared secret — but both are still static keys, not
+  individual user accounts. No login system, no per-user audit trail.
 - **Fairness remediation:** the audit identifies disparate impact by age;
   it does not yet implement a remediation (e.g. reweighing, threshold
   adjustment per group, or targeted data collection) — that's the natural

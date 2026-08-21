@@ -10,11 +10,12 @@ tier maps to the expected decision family.
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.api import CREDME_API_KEY, app
+from backend.api import CREDME_API_KEY_ADMIN, CREDME_API_KEY_APPLICANT, app
 
 client = TestClient(app)
 
-AUTH_HEADERS = {"X-API-Key": CREDME_API_KEY}
+AUTH_HEADERS = {"X-API-Key": CREDME_API_KEY_APPLICANT}
+ADMIN_HEADERS = {"X-API-Key": CREDME_API_KEY_ADMIN}
 
 
 def base_application(**overrides):

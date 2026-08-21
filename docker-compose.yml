@@ -6,14 +6,16 @@ services:
     ports:
       - "4000:4000"
     environment:
-      CREDME_API_KEY: ${CREDME_API_KEY:-credme-dev-local-key}
+      CREDME_API_KEY_APPLICANT: ${CREDME_API_KEY_APPLICANT:-credme-dev-applicant-key}
+      CREDME_API_KEY_ADMIN: ${CREDME_API_KEY_ADMIN:-credme-dev-admin-key}
+      CREDME_LLM_API_KEY: ${CREDME_LLM_API_KEY:-}
 
   frontend:
     build:
       context: .
       dockerfile: frontend/Dockerfile
       args:
-        VITE_API_KEY: ${CREDME_API_KEY:-credme-dev-local-key}
+        VITE_API_KEY: ${CREDME_API_KEY_APPLICANT:-credme-dev-applicant-key}
     ports:
       - "5173:80"
     depends_on:
