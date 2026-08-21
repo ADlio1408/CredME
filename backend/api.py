@@ -1658,10 +1658,17 @@ def decision(
     # --------------------------------------------------------
     # Payment history
     # --------------------------------------------------------
+    #
+    # PaymentHistory is NOT a 0-1 ratio. In the training data
+    # (data/Loan.csv) it ranges ~8-45, with a 10th percentile
+    # of ~18. The previous "< 0.70" threshold assumed a 0-1
+    # scale and therefore never fired for any real applicant.
+    #
+    # --------------------------------------------------------
 
     if (
         application.PaymentHistory
-        < 0.70
+        < 18
     ):
 
         financial_concerns.append(

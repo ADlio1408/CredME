@@ -178,6 +178,40 @@ def test_behavior_check_high_login_attempts_flagged():
     assert "Unusually high login attempts" in signal_texts
 
 
+def test_weak_payment_history_is_flagged():
+    """
+    Regression test: PaymentHistory is on an ~8-45 scale in the
+    training data, not a 0-1 ratio. A prior bug compared it
+    against 0.70, so this concern never fired for any real
+    applicant. It must now fire for a genuinely low value.
+    """
+    application = base_application(PaymentHistory=10)
+    transaction = base_transaction()
+
+    response = client.post(
+        "/decision",
+        json={"application": application, "transaction": transaction},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "Weak payment history" in body["financial_concerns"]
+
+
+def test_typical_payment_history_not_flagged():
+    application = base_application(PaymentHistory=28)
+    transaction = base_transaction()
+
+    response = client.post(
+        "/decision",
+        json={"application": application, "transaction": transaction},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "Weak payment history" not in body["financial_concerns"]
+
+
 def test_decision_rejects_invalid_payload():
     response = client.post(
         "/decision",
