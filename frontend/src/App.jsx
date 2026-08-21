@@ -1,47 +1,47 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import "./App.css";
 
 const API_KEY = import.meta.env.VITE_API_KEY || "credme-dev-applicant-key";
 
 const initialApplication = {
   Age: 32,
-  AnnualIncome: 75000,
-  CreditScore: 680,
+  AnnualIncome: 750000,
+  CreditScore: 0,
   EmploymentStatus: "Employed",
   EducationLevel: "Bachelor",
   Experience: 8,
-  LoanAmount: 20000,
+  LoanAmount: 200000,
   LoanDuration: 36,
   MaritalStatus: "Single",
   NumberOfDependents: 1,
   HomeOwnershipStatus: "Rent",
-  MonthlyDebtPayments: 800,
-  TotalDebtToIncomeRatio: 0.30,
-  CreditCardUtilizationRate: 0.25,
+  MonthlyDebtPayments: 8000,
+  TotalDebtToIncomeRatio: 0.128,
+  CreditCardUtilizationRate: 25,
   NumberOfOpenCreditLines: 4,
   NumberOfCreditInquiries: 1,
-  DebtToIncomeRatio: 0.22,
+  DebtToIncomeRatio: 0.128,
   BankruptcyHistory: 0,
   LoanPurpose: "Education",
   PreviousLoanDefaults: 0,
   PaymentHistory: 28,
   LengthOfCreditHistory: 10,
-  SavingsAccountBalance: 15000,
-  CheckingAccountBalance: 5000,
-  TotalAssets: 50000,
-  TotalLiabilities: 20000,
-  MonthlyIncome: 6250,
+  SavingsAccountBalance: 150000,
+  CheckingAccountBalance: 50000,
+  TotalAssets: 500000,
+  TotalLiabilities: 200000,
+  MonthlyIncome: 62500,
   UtilityBillsPaymentHistory: 0.95,
   JobTenure: 5,
-  NetWorth: 30000,
-  RentPaymentConsistency: 0.9,
+  NetWorth: 300000,
+  RentPaymentConsistency: 90,
 };
 
 const initialTransaction = {
-  TransactionAmount: 150,
+  TransactionAmount: 75000,
   TransactionDuration: 60,
   LoginAttempts: 1,
-  AccountBalance: 8000,
+  AccountBalance: 50000,
   CustomerAge: 32,
   TransactionType: "Debit",
   Location: "San Diego",
@@ -49,6 +49,19 @@ const initialTransaction = {
   AccountID: "AC00128",
   DeviceID: "D000380",
 };
+
+function calculateDTI(appState) {
+  const debt = parseFloat(appState.MonthlyDebtPayments) || 0;
+  let income = parseFloat(appState.MonthlyIncome);
+  if (!income || income <= 0) {
+    const annual = parseFloat(appState.AnnualIncome);
+    if (annual && annual > 0) {
+      income = annual / 12;
+    }
+  }
+  if (!income || income <= 0) return 0;
+  return parseFloat((debt / income).toFixed(4));
+}
 
 function App() {
   const [application, setApplication] = useState(initialApplication);
@@ -59,10 +72,36 @@ function App() {
   const [error, setError] = useState("");
 
   const updateApplication = (field, value) => {
-    setApplication((prev) => ({
-      ...prev,
-      [field]: value,
-    }));
+    setApplication((prev) => {
+      let finalValue = value;
+      // Clamp percentage fields between 0 and 100
+      if ((field === "RentPaymentConsistency" || field === "CreditCardUtilizationRate") && value !== "") {
+        const num = parseFloat(value);
+        if (!isNaN(num)) {
+          finalValue = Math.max(0, Math.min(100, num));
+        }
+      }
+
+      const next = {
+        ...prev,
+        [field]: finalValue,
+      };
+
+      // Keep transaction.CustomerAge synced with applicant Age
+      if (field === "Age") {
+        setTransaction((tPrev) => ({
+          ...tPrev,
+          CustomerAge: finalValue,
+        }));
+      }
+
+      // Automatically update DebtToIncomeRatio and TotalDebtToIncomeRatio in state
+      const computedDti = calculateDTI(next);
+      next.DebtToIncomeRatio = computedDti;
+      next.TotalDebtToIncomeRatio = computedDti;
+
+      return next;
+    });
   };
 
   const updateTransaction = (field, value) => {
@@ -72,10 +111,104 @@ function App() {
     }));
   };
 
+  const isAgeInvalid = application.Age === "" || Number(application.Age) <= 0;
+  const calculatedDti = calculateDTI(application);
+
+  // Data Quality & Consistency Warnings (non-blocking)
+  const incomeInconsistencyWarning = useMemo(() => {
+    const annual = parseFloat(application.AnnualIncome);
+    const monthly = parseFloat(application.MonthlyIncome);
+    if (!isNaN(annual) && annual > 0 && !isNaN(monthly) && monthly > 0) {
+      const expectedAnnual = monthly * 12;
+      const diff = Math.abs(annual - expectedAnnual);
+      // Sensible numerical tolerance: accounts for monthly rounding (up to ₹12/yr or 1% of annual income)
+      const tolerance = Math.max(12, annual * 0.01);
+      if (diff > tolerance) {
+        return `⚠️ Input Consistency Note: Reported annual income (₹${annual.toLocaleString()}/yr) differs from 12 × monthly income (₹${monthly.toLocaleString()}/mo = ₹${expectedAnnual.toLocaleString()}/yr). Underwriting evaluates both values exactly as entered.`;
+      }
+    }
+    return null;
+  }, [application.AnnualIncome, application.MonthlyIncome]);
+
+  const loanExposureWarning = useMemo(() => {
+    const annual = parseFloat(application.AnnualIncome);
+    const loan = parseFloat(application.LoanAmount);
+    if (!isNaN(annual) && annual > 0 && !isNaN(loan) && loan > annual * 2) {
+      return `⚠️ High Exposure Note: Requested loan amount (₹${loan.toLocaleString()}) is ${(loan / annual).toFixed(1)}x total reported annual income (₹${annual.toLocaleString()}).`;
+    }
+    return null;
+  }, [application.AnnualIncome, application.LoanAmount]);
+
+  const transactionOverdraftWarning = useMemo(() => {
+    const txn = parseFloat(transaction.TransactionAmount);
+    const bal = parseFloat(transaction.AccountBalance);
+    if (!isNaN(txn) && !isNaN(bal) && txn > bal) {
+      return `⚠️ Account Balance Note: Transaction amount (₹${txn.toLocaleString()}) exceeds available account balance (₹${bal.toLocaleString()}). This will be evaluated as a rule-based behavioral check.`;
+    }
+    return null;
+  }, [transaction.TransactionAmount, transaction.AccountBalance]);
+
+  const getDtiDisplay = () => {
+    const monthlyIncome = parseFloat(application.MonthlyIncome) || (parseFloat(application.AnnualIncome) ? parseFloat(application.AnnualIncome) / 12 : 0);
+    const monthlyDebt = parseFloat(application.MonthlyDebtPayments) || 0;
+
+    if (monthlyIncome <= 0 && monthlyDebt > 0) {
+      return {
+        value: "Undefined (Zero Income)",
+        badge: "⚠️ Undefined DTI",
+        helper: `⚠️ Monthly debt payments of ₹${monthlyDebt.toLocaleString()} reported with ₹0 monthly income.`,
+      };
+    }
+    if (calculatedDti <= 0) {
+      return {
+        value: "0.0% (0.00)",
+        badge: "Auto-Calculated",
+        helper: "Computed: Monthly Debt ÷ Monthly Income",
+      };
+    }
+    if (calculatedDti >= 1.0) {
+      return {
+        value: `${(calculatedDti * 100).toFixed(1)}% (${calculatedDti.toFixed(1)}x Income)`,
+        badge: "⚠️ Critical Affordability Risk",
+        helper: `⚠️ Severe debt burden: Existing debt (₹${monthlyDebt.toLocaleString()}/mo) exceeds monthly income (₹${monthlyIncome.toLocaleString()}/mo) by ${calculatedDti.toFixed(1)}x. Debt obligations exceed 100% of income.`,
+      };
+    }
+    if (calculatedDti >= 0.50) {
+      return {
+        value: `${(calculatedDti * 100).toFixed(1)}%`,
+        badge: "High DTI",
+        helper: `Elevated debt load: Monthly debt obligations consume ${(calculatedDti * 100).toFixed(0)}% of monthly income.`,
+      };
+    }
+    return {
+      value: `${(calculatedDti * 100).toFixed(1)}%`,
+      badge: "Auto-Calculated",
+      helper: `Monthly Debt (₹${monthlyDebt.toLocaleString()}) ÷ Monthly Income (₹${monthlyIncome.toLocaleString()})`,
+    };
+  };
+
+  const dtiDisplay = getDtiDisplay();
+
   const assessCredit = async () => {
-    setLoading(true);
     setError("");
     setResult(null);
+
+    // Validation: Age cannot be 0 or invalid
+    const ageNum = Number(application.Age);
+    if (!application.Age || isNaN(ageNum) || ageNum <= 0) {
+      setError("Invalid Age: Applicant age cannot be 0 or empty. Please enter a valid age.");
+      return;
+    }
+
+    const customerAgeNum = Number(transaction.CustomerAge);
+    if (!transaction.CustomerAge || isNaN(customerAgeNum) || customerAgeNum <= 0) {
+      setError("Invalid Age: Transaction customer age cannot be 0 or empty. Please enter a valid age.");
+      return;
+    }
+
+    const currentDti = calculateDTI(application);
+
+    setLoading(true);
 
     try {
       const response = await fetch("http://127.0.0.1:4000/decision", {
@@ -88,58 +221,56 @@ function App() {
           application: {
             ...application,
             Age: Number(application.Age),
-            AnnualIncome: Number(application.AnnualIncome),
-            CreditScore: Number(application.CreditScore),
-            Experience: Number(application.Experience),
-            LoanAmount: Number(application.LoanAmount),
-            LoanDuration: Number(application.LoanDuration),
-            NumberOfDependents: Number(application.NumberOfDependents),
-            MonthlyDebtPayments: Number(application.MonthlyDebtPayments),
-            TotalDebtToIncomeRatio: Number(
-              application.TotalDebtToIncomeRatio
-            ),
+            AnnualIncome: Number(application.AnnualIncome || 0),
+            CreditScore: Number(application.CreditScore || 0),
+            Experience: Number(application.Experience || 0),
+            LoanAmount: Number(application.LoanAmount || 0),
+            LoanDuration: Number(application.LoanDuration || 0),
+            NumberOfDependents: Number(application.NumberOfDependents || 0),
+            MonthlyDebtPayments: Number(application.MonthlyDebtPayments || 0),
+            TotalDebtToIncomeRatio: currentDti,
             CreditCardUtilizationRate: Number(
-              application.CreditCardUtilizationRate
-            ),
+              application.CreditCardUtilizationRate || 0
+            ) / 100,
             NumberOfOpenCreditLines: Number(
-              application.NumberOfOpenCreditLines
+              application.NumberOfOpenCreditLines || 0
             ),
             NumberOfCreditInquiries: Number(
-              application.NumberOfCreditInquiries
+              application.NumberOfCreditInquiries || 0
             ),
-            DebtToIncomeRatio: Number(application.DebtToIncomeRatio),
-            BankruptcyHistory: Number(application.BankruptcyHistory),
-            PreviousLoanDefaults: Number(application.PreviousLoanDefaults),
-            PaymentHistory: Number(application.PaymentHistory),
+            DebtToIncomeRatio: currentDti,
+            BankruptcyHistory: Number(application.BankruptcyHistory || 0),
+            PreviousLoanDefaults: Number(application.PreviousLoanDefaults || 0),
+            PaymentHistory: Number(application.PaymentHistory || 0),
             LengthOfCreditHistory: Number(
-              application.LengthOfCreditHistory
+              application.LengthOfCreditHistory || 0
             ),
             SavingsAccountBalance: Number(
-              application.SavingsAccountBalance
+              application.SavingsAccountBalance || 0
             ),
             CheckingAccountBalance: Number(
-              application.CheckingAccountBalance
+              application.CheckingAccountBalance || 0
             ),
-            TotalAssets: Number(application.TotalAssets),
-            TotalLiabilities: Number(application.TotalLiabilities),
-            MonthlyIncome: Number(application.MonthlyIncome),
+            TotalAssets: Number(application.TotalAssets || 0),
+            TotalLiabilities: Number(application.TotalLiabilities || 0),
+            MonthlyIncome: Number(application.MonthlyIncome || 0),
             UtilityBillsPaymentHistory: Number(
-              application.UtilityBillsPaymentHistory
+              application.UtilityBillsPaymentHistory || 0
             ),
-            JobTenure: Number(application.JobTenure),
-            NetWorth: Number(application.NetWorth),
+            JobTenure: Number(application.JobTenure || 0),
+            NetWorth: Number(application.NetWorth || 0),
             RentPaymentConsistency: Number(
-              application.RentPaymentConsistency
-            ),
+              application.RentPaymentConsistency || 0
+            ) / 100,
           },
 
           transaction: {
             ...transaction,
-            TransactionAmount: Number(transaction.TransactionAmount),
-            TransactionDuration: Number(transaction.TransactionDuration),
-            LoginAttempts: Number(transaction.LoginAttempts),
-            AccountBalance: Number(transaction.AccountBalance),
-            CustomerAge: Number(transaction.CustomerAge),
+            TransactionAmount: Number(transaction.TransactionAmount || 0),
+            TransactionDuration: Number(transaction.TransactionDuration || 0),
+            LoginAttempts: Number(transaction.LoginAttempts || 0),
+            AccountBalance: Number(transaction.AccountBalance || 0),
+            CustomerAge: Number(transaction.CustomerAge || 0),
           },
         }),
       });
@@ -156,7 +287,9 @@ function App() {
       console.error(err);
 
       setError(
-        "Unable to connect to CredMe API. Make sure the FastAPI server is running on port 4000."
+        err.message?.includes("detail")
+          ? err.message
+          : "Unable to connect to CredMe API. Make sure the FastAPI server is running on port 4000."
       );
     } finally {
       setLoading(false);
@@ -250,6 +383,10 @@ function App() {
             <Field
               label="Age"
               value={application.Age}
+              isNumeric={true}
+              integerOnly={true}
+              hasError={isAgeInvalid}
+              errorMessage={isAgeInvalid ? "Age cannot be 0. Enter a valid age." : ""}
               onChange={(v) => updateApplication("Age", v)}
             />
 
@@ -257,12 +394,16 @@ function App() {
               label="Annual Income"
               prefix="₹"
               value={application.AnnualIncome}
+              isNumeric={true}
               onChange={(v) => updateApplication("AnnualIncome", v)}
             />
 
             <Field
               label="Credit Score"
               value={application.CreditScore}
+              isNumeric={true}
+              integerOnly={true}
+              helperText="Set 0 for thin-file / New-to-Credit"
               onChange={(v) => updateApplication("CreditScore", v)}
             />
 
@@ -270,6 +411,7 @@ function App() {
               label="Rent Payment Consistency (alt. data, thin-file only)"
               value={application.RentPaymentConsistency}
               suffix="%"
+              isNumeric={true}
               onChange={(v) =>
                 updateApplication("RentPaymentConsistency", v)
               }
@@ -307,6 +449,9 @@ function App() {
             <Field
               label="Years of Experience"
               value={application.Experience}
+              isNumeric={true}
+              integerOnly={true}
+              suffix="yrs"
               onChange={(v) => updateApplication("Experience", v)}
             />
 
@@ -349,6 +494,7 @@ function App() {
               label="Loan Amount"
               prefix="₹"
               value={application.LoanAmount}
+              isNumeric={true}
               onChange={(v) => updateApplication("LoanAmount", v)}
             />
 
@@ -356,6 +502,8 @@ function App() {
               label="Loan Duration"
               suffix="months"
               value={application.LoanDuration}
+              isNumeric={true}
+              integerOnly={true}
               onChange={(v) =>
                 updateApplication("LoanDuration", v)
               }
@@ -381,6 +529,7 @@ function App() {
               label="Monthly Income"
               prefix="₹"
               value={application.MonthlyIncome}
+              isNumeric={true}
               onChange={(v) =>
                 updateApplication("MonthlyIncome", v)
               }
@@ -390,6 +539,7 @@ function App() {
               label="Monthly Debt Payments"
               prefix="₹"
               value={application.MonthlyDebtPayments}
+              isNumeric={true}
               onChange={(v) =>
                 updateApplication("MonthlyDebtPayments", v)
               }
@@ -397,17 +547,18 @@ function App() {
 
             <Field
               label="Debt-to-Income Ratio"
-              value={application.DebtToIncomeRatio}
-              suffix="%"
-              onChange={(v) =>
-                updateApplication("DebtToIncomeRatio", v)
-              }
+              value={dtiDisplay.value}
+              readOnly={true}
+              isCalculated={true}
+              badge={dtiDisplay.badge}
+              helperText={dtiDisplay.helper}
             />
 
             <Field
               label="Credit Utilization"
               value={application.CreditCardUtilizationRate}
               suffix="%"
+              isNumeric={true}
               onChange={(v) =>
                 updateApplication(
                   "CreditCardUtilizationRate",
@@ -420,6 +571,7 @@ function App() {
               label="Savings Balance"
               prefix="₹"
               value={application.SavingsAccountBalance}
+              isNumeric={true}
               onChange={(v) =>
                 updateApplication(
                   "SavingsAccountBalance",
@@ -432,6 +584,7 @@ function App() {
               label="Checking Balance"
               prefix="₹"
               value={application.CheckingAccountBalance}
+              isNumeric={true}
               onChange={(v) =>
                 updateApplication(
                   "CheckingAccountBalance",
@@ -444,6 +597,7 @@ function App() {
               label="Total Assets"
               prefix="₹"
               value={application.TotalAssets}
+              isNumeric={true}
               onChange={(v) =>
                 updateApplication("TotalAssets", v)
               }
@@ -453,6 +607,7 @@ function App() {
               label="Total Liabilities"
               prefix="₹"
               value={application.TotalLiabilities}
+              isNumeric={true}
               onChange={(v) =>
                 updateApplication(
                   "TotalLiabilities",
@@ -465,6 +620,8 @@ function App() {
               label="Net Worth"
               prefix="₹"
               value={application.NetWorth}
+              isNumeric={true}
+              allowNegative={true}
               onChange={(v) =>
                 updateApplication("NetWorth", v)
               }
@@ -482,7 +639,7 @@ function App() {
 
             <div>
               <h3>Behavioral Intelligence</h3>
-              <p>Real-time transaction and fraud signals</p>
+              <p>Real-time transaction & behavioral risk signals</p>
             </div>
           </div>
 
@@ -491,6 +648,7 @@ function App() {
               label="Transaction Amount"
               prefix="₹"
               value={transaction.TransactionAmount}
+              isNumeric={true}
               onChange={(v) =>
                 updateTransaction(
                   "TransactionAmount",
@@ -503,6 +661,7 @@ function App() {
               label="Account Balance"
               prefix="₹"
               value={transaction.AccountBalance}
+              isNumeric={true}
               onChange={(v) =>
                 updateTransaction(
                   "AccountBalance",
@@ -515,6 +674,7 @@ function App() {
               label="Transaction Duration"
               suffix="sec"
               value={transaction.TransactionDuration}
+              isNumeric={true}
               onChange={(v) =>
                 updateTransaction(
                   "TransactionDuration",
@@ -526,6 +686,8 @@ function App() {
             <Field
               label="Login Attempts"
               value={transaction.LoginAttempts}
+              isNumeric={true}
+              integerOnly={true}
               onChange={(v) =>
                 updateTransaction(
                   "LoginAttempts",
@@ -594,6 +756,33 @@ function App() {
         </section>
 
         {/* =====================================================
+            DATA QUALITY & CONSISTENCY WARNINGS
+        ====================================================== */}
+
+        {(incomeInconsistencyWarning || loanExposureWarning || transactionOverdraftWarning) && (
+          <div style={{ marginTop: "16px", marginBottom: "8px" }}>
+            {incomeInconsistencyWarning && (
+              <div className="data-quality-banner">
+                <span>ℹ️</span>
+                <div>{incomeInconsistencyWarning}</div>
+              </div>
+            )}
+            {loanExposureWarning && (
+              <div className="data-quality-banner">
+                <span>ℹ️</span>
+                <div>{loanExposureWarning}</div>
+              </div>
+            )}
+            {transactionOverdraftWarning && (
+              <div className="data-quality-banner">
+                <span>ℹ️</span>
+                <div>{transactionOverdraftWarning}</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* =====================================================
             ASSESS BUTTON
         ====================================================== */}
 
@@ -617,7 +806,7 @@ function App() {
           </button>
 
           <p>
-            CredMe evaluates creditworthiness and behavioral risk
+            CredMe evaluates creditworthiness, financial affordability and behavioral risk
             before generating a recommendation.
           </p>
         </div>
@@ -666,10 +855,10 @@ function App() {
               </div>
 
               <div className="decision-score">
-                <span>Credit Confidence</span>
+                <span>Predicted Approval Probability</span>
 
                 <strong>
-                  {result.credit_confidence}%
+                  {result.predicted_approval_probability ?? result.credit_confidence}%
                 </strong>
 
                 <small>
@@ -678,15 +867,16 @@ function App() {
               </div>
             </div>
 
-            {/* RISK CARDS */}
+            {/* THREE INTELLIGENCE CARDS */}
 
             <div className="result-grid">
+              {/* Layer 1: Credit Intelligence */}
               <div className="result-card">
                 <div className="result-card-top">
                   <span>Credit Intelligence</span>
 
                   <span className="result-number">
-                    {result.credit_confidence}%
+                    {result.predicted_approval_probability ?? result.credit_confidence}%
                   </span>
                 </div>
 
@@ -695,7 +885,7 @@ function App() {
                     className="progress-fill credit"
                     style={{
                       width: `${Math.min(
-                        result.credit_confidence,
+                        result.predicted_approval_probability ?? result.credit_confidence ?? 0,
                         100
                       )}%`,
                     }}
@@ -704,12 +894,71 @@ function App() {
 
                 <div className="result-footer">
                   <span>Credit Strength</span>
-                  <strong>
+                  <span
+                    className={`risk-pill ${
+                      result.credit_strength === "THIN_FILE"
+                        ? "risk-thin"
+                        : result.credit_strength === "STRONG"
+                        ? "risk-low"
+                        : result.credit_strength === "BORDERLINE"
+                        ? "risk-medium"
+                        : "risk-high"
+                    }`}
+                  >
                     {result.credit_strength}
+                  </span>
+                </div>
+
+                <p style={{ fontSize: "11px", color: "var(--muted)", margin: "10px 0 0", lineHeight: 1.4 }}>
+                  {result.credit_intelligence?.credit_history_note ??
+                    (result.thin_file
+                      ? "No traditional bureau history (New-to-Credit). Missing bureau score represented using baseline population median (~650); thin-file status evaluated in policy context."
+                      : "Traditional bureau credit score available.")}
+                </p>
+              </div>
+
+              {/* Layer 2: Financial Risk Analysis */}
+              <div className="result-card">
+                <div className="result-card-top">
+                  <span>Financial Risk Engine</span>
+
+                  <span
+                    className={`risk-pill ${
+                      (result.financial_intelligence?.financial_risk_level || "LOW") === "CRITICAL"
+                        ? "risk-critical"
+                        : getRiskClass(result.financial_intelligence?.financial_risk_level || "LOW")
+                    }`}
+                  >
+                    {result.financial_intelligence?.financial_risk_level || "LOW"}
+                  </span>
+                </div>
+
+                <div className="behavior-score">
+                  <strong>
+                    {result.financial_intelligence?.dti_percentage !== null &&
+                    result.financial_intelligence?.dti_percentage !== undefined
+                      ? `${result.financial_intelligence.dti_percentage.toLocaleString()}%`
+                      : result.debt_to_income_ratio
+                      ? `${(result.debt_to_income_ratio * 100).toFixed(1)}%`
+                      : "N/A"}
+                  </strong>
+
+                  <span>DTI ratio</span>
+                </div>
+
+                <div className="result-footer">
+                  <span>Monthly Cash Flow</span>
+                  <strong>
+                    {result.financial_intelligence?.monthly_cash_flow !== undefined
+                      ? result.financial_intelligence.monthly_cash_flow >= 0
+                        ? `+₹${result.financial_intelligence.monthly_cash_flow.toLocaleString()}/mo`
+                        : `-₹${Math.abs(result.financial_intelligence.monthly_cash_flow).toLocaleString()}/mo`
+                      : "N/A"}
                   </strong>
                 </div>
               </div>
 
+              {/* Layer 3: Behavioral Intelligence */}
               <div className="result-card">
                 <div className="result-card-top">
                   <span>Behavioral Intelligence</span>
@@ -725,22 +974,17 @@ function App() {
 
                 <div className="behavior-score">
                   <strong>
-                    {result.behavioral_anomaly_score}
+                    {result.normalized_anomaly_score ?? result.behavioral_anomaly_score}
                   </strong>
 
                   <span>
-                    behavioral anomaly score
+                    Normalized Anomaly Score
                   </span>
                 </div>
 
                 <div className="result-footer">
-                  <span>Anomaly Detection</span>
-
-                  <strong>
-                    {result.anomaly_detected
-                      ? "DETECTED"
-                      : "NORMAL"}
-                  </strong>
+                  <span>Model: <strong>{result.behavioral_intelligence?.model_status ?? (result.anomaly_detected ? "ANOMALOUS" : "NORMAL")}</strong></span>
+                  <span>Rules: <strong>{result.transaction_rule_checks?.length ?? result.rule_checks_flagged?.length ?? 0} flagged</strong></span>
                 </div>
               </div>
             </div>
@@ -754,7 +998,7 @@ function App() {
                 <div>
                   <h3>Decision Reasoning</h3>
                   <p>
-                    Explainable AI assessment
+                    Explainable AI multi-factor synthesis
                   </p>
                 </div>
               </div>
@@ -764,46 +1008,74 @@ function App() {
               </p>
 
               <div className="signal-section">
-                <h4>Risk Signals</h4>
+                <h4>Categorized Risk Signals & Evidence</h4>
 
-                {result.high_risk_signals?.length > 0 && (
+                {/* Financial Concerns */}
+                {result.financial_concerns?.length > 0 && (
+                  <div className="signals" style={{ marginBottom: "14px" }}>
+                    <div style={{ fontSize: "11px", fontWeight: "700", color: "#9f1239", marginBottom: "2px" }}>
+                      FINANCIAL CAPACITY & DEBT CONCERNS
+                    </div>
+                    {result.financial_concerns.map((concern, index) => (
+                      <div className="signal financial" key={`fin-${index}`}>
+                        <span>!</span>
+                        {concern}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Thin-File Context (Bureau status only, NO financial duplicates) */}
+                {result.thin_file && result.thin_file_context?.length > 0 && (
+                  <div className="signals" style={{ marginBottom: "14px" }}>
+                    <div style={{ fontSize: "11px", fontWeight: "700", color: "#5b21b6", marginBottom: "2px" }}>
+                      CREDIT HISTORY & THIN-FILE STATUS
+                    </div>
+                    {result.thin_file_context.map((note, index) => (
+                      <div className="signal thin-file" key={`thin-ctx-${index}`}>
+                        <span>ℹ</span>
+                        {note}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Behavioral Rule Flags & Anomalies */}
+                {(result.high_risk_signals?.length > 0 ||
+                  result.medium_risk_signals?.length > 0 ||
+                  result.rule_checks_flagged?.length > 0 ||
+                  result.anomaly_detected) && (
                   <div className="signals">
-                    {result.high_risk_signals.map(
-                      (signal, index) => (
-                        <div
-                          className="signal high"
-                          key={index}
-                        >
-                          <span>!</span>
-                          {signal}
-                        </div>
-                      )
+                    <div style={{ fontSize: "11px", fontWeight: "700", color: "#655a72", marginBottom: "2px" }}>
+                      BEHAVIORAL SIGNALS & ACCOUNT CHECKS
+                    </div>
+                    {result.rule_checks_flagged?.map((flag, index) => (
+                      <div className="signal medium" key={`rule-${index}`}>
+                        <span>!</span>
+                        {flag}
+                      </div>
+                    ))}
+                    {result.anomaly_detected && (
+                      <div className="signal high" key="ml-anom">
+                        <span>!</span>
+                        ML Anomaly Model flagged unusual transaction signature.
+                      </div>
+                    )}
+                    {!result.anomaly_detected && (!result.rule_checks_flagged || result.rule_checks_flagged.length === 0) && (
+                      <div className="signal normal">
+                        <span>✓</span>
+                        Behavioral model: NORMAL — No anomalous transaction signals detected.
+                      </div>
                     )}
                   </div>
                 )}
 
-                {result.medium_risk_signals?.length > 0 && (
-                  <div className="signals">
-                    {result.medium_risk_signals.map(
-                      (signal, index) => (
-                        <div
-                          className="signal medium"
-                          key={index}
-                        >
-                          <span>!</span>
-                          {signal}
-                        </div>
-                      )
-                    )}
-                  </div>
-                )}
-
-                {result.high_risk_signals?.length === 0 &&
-                  result.medium_risk_signals?.length === 0 && (
+                {(!result.financial_concerns || result.financial_concerns.length === 0) &&
+                  (!result.rule_checks_flagged || result.rule_checks_flagged.length === 0) &&
+                  !result.anomaly_detected && (
                     <div className="signal normal">
                       <span>✓</span>
-                      No significant behavioral risk signals
-                      detected.
+                      All financial and behavioral risk screens passed cleanly.
                     </div>
                   )}
               </div>
@@ -816,7 +1088,7 @@ function App() {
                 <div>
                   <h3>Credit Decision Drivers</h3>
                   <p>
-                    Key factors influencing the model prediction
+                    Top 5 model drivers — Relative SHAP Contribution
                   </p>
                 </div>
 
@@ -824,39 +1096,45 @@ function App() {
               </div>
 
               <div className="drivers-list">
-                {result.reasons?.map((reason, index) => (
-                  <div
-                    className="driver"
-                    key={index}
-                  >
-                    <div className="driver-info">
-                      <span className="driver-rank">
-                        {String(index + 1).padStart(2, "0")}
-                      </span>
+                {result.reasons?.map((reason, index) => {
+                  const isPositive = reason.impact >= 0;
+                  const contributionPct = reason.relative_contribution_pct ?? Math.abs(reason.impact);
+                  const directionText = reason.direction ?? reason.effect ?? (isPositive ? "Increases approval likelihood" : "Decreases approval likelihood");
 
-                      <div>
-                        <strong>
-                          {reason.feature}
-                        </strong>
+                  return (
+                    <div
+                      className="driver"
+                      key={index}
+                    >
+                      <div className="driver-info">
+                        <span className="driver-rank">
+                          {String(index + 1).padStart(2, "0")}
+                        </span>
 
-                        <small>
-                          {reason.effect}
-                        </small>
+                        <div>
+                          <strong>
+                            {reason.feature}
+                          </strong>
+
+                          <small>
+                            {directionText}
+                          </small>
+                        </div>
+                      </div>
+
+                      <div
+                        className={
+                          isPositive
+                            ? "impact positive"
+                            : "impact negative"
+                        }
+                      >
+                        {isPositive ? "▲ +" : "▼ -"}
+                        {contributionPct}%
                       </div>
                     </div>
-
-                    <div
-                      className={
-                        reason.impact >= 0
-                          ? "impact positive"
-                          : "impact negative"
-                      }
-                    >
-                      {reason.impact >= 0 ? "+" : ""}
-                      {reason.impact}%
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
@@ -895,10 +1173,61 @@ function Field({
   onChange,
   prefix,
   suffix,
+  isNumeric = false,
+  integerOnly = false,
+  allowNegative = false,
+  readOnly = false,
+  isCalculated = false,
+  badge = null,
+  hasError = false,
+  errorMessage = "",
+  helperText = "",
+  placeholder = "",
 }) {
+  const handleInputChange = (e) => {
+    if (readOnly) return;
+    const rawVal = e.target.value;
+
+    if (!isNumeric) {
+      if (onChange) onChange(rawVal);
+      return;
+    }
+
+    // Allow empty string to allow clearing the field
+    if (rawVal === "") {
+      if (onChange) onChange("");
+      return;
+    }
+
+    if (integerOnly) {
+      if (/^\d+$/.test(rawVal)) {
+        if (onChange) onChange(rawVal);
+      }
+    } else if (allowNegative) {
+      if (/^-?\d*\.?\d*$/.test(rawVal)) {
+        if (onChange) onChange(rawVal);
+      }
+    } else {
+      if (/^\d*\.?\d*$/.test(rawVal)) {
+        if (onChange) onChange(rawVal);
+      }
+    }
+  };
+
+  const fieldClasses = [
+    "field",
+    readOnly || isCalculated ? "is-readonly" : "",
+    hasError ? "has-error" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <label className="field">
-      <span>{label}</span>
+    <div className={fieldClasses}>
+      <div className="field-header">
+        <span className="field-label">{label}</span>
+        {badge && <span className="field-badge">{badge}</span>}
+      </div>
 
       <div className="input-wrapper">
         {prefix && (
@@ -909,10 +1238,14 @@ function Field({
 
         <input
           type="text"
-          value={value}
-          onChange={(e) =>
-            onChange(e.target.value)
+          inputMode={
+            isNumeric ? (integerOnly ? "numeric" : "decimal") : "text"
           }
+          value={value ?? ""}
+          onChange={handleInputChange}
+          readOnly={readOnly}
+          placeholder={placeholder}
+          aria-invalid={hasError}
         />
 
         {suffix && (
@@ -921,7 +1254,15 @@ function Field({
           </span>
         )}
       </div>
-    </label>
+
+      {hasError && errorMessage && (
+        <span className="field-error-msg">⚠️ {errorMessage}</span>
+      )}
+
+      {!hasError && helperText && (
+        <span className="field-helper">{helperText}</span>
+      )}
+    </div>
   );
 }
 

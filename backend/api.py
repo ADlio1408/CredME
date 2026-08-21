@@ -1,7 +1,7 @@
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel
+from pydantic import BaseModel, Field as PydanticField, field_validator
 
 import os
 import re
@@ -452,7 +452,7 @@ population_median_balance = (
 
 class LoanApplication(BaseModel):
 
-    Age: int
+    Age: int = PydanticField(..., gt=0, description="Applicant age must be greater than 0")
 
     AnnualIncome: float
 
@@ -526,6 +526,13 @@ class LoanApplication(BaseModel):
 
     RentPaymentConsistency: float | None = None
 
+    @field_validator("Age")
+    @classmethod
+    def validate_applicant_age(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("Age cannot be 0 or negative. A valid applicant age is required.")
+        return v
+
 
 # ============================================================
 # TRANSACTION INPUT
@@ -541,7 +548,7 @@ class TransactionInput(BaseModel):
 
     AccountBalance: float
 
-    CustomerAge: int
+    CustomerAge: int = PydanticField(..., gt=0, description="Customer age must be greater than 0")
 
     TransactionType: str
 
@@ -552,6 +559,13 @@ class TransactionInput(BaseModel):
     AccountID: str
 
     DeviceID: str
+
+    @field_validator("CustomerAge")
+    @classmethod
+    def validate_customer_age(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("CustomerAge cannot be 0 or negative. A valid age is required.")
+        return v
 
 
 # ============================================================
@@ -801,23 +815,23 @@ def get_credit_reasons(
         if impact > 0:
 
             effect = (
-                "increased approval confidence"
+                "Increases approval likelihood"
             )
 
         else:
 
             effect = (
-                "reduced approval confidence"
+                "Decreases approval likelihood"
             )
 
         reasons.append(
             {
                 "feature": clean_name,
-                "impact": round(
-                    pct,
-                    1
-                ),
+                "relative_contribution_pct": round(abs(pct), 1),
+                "impact": round(pct, 1),
+                "direction": effect,
                 "effect": effect,
+                "raw_shap_impact": round(impact, 4),
             }
         )
 
@@ -1288,7 +1302,416 @@ def generate_behavior_signals(
 
 
 # ============================================================
-# UNIFIED CREDME DECISION
+# CONFIGURABLE UNDERWRITING POLICY THRESHOLDS
+# ============================================================
+# Note: These are institution-level risk policy bands (not ML-calibrated cutoffs):
+POLICY_APPROVAL_PROBABILITY_THRESHOLD = 70.0  # Min predicted approval prob for approval eligibility
+POLICY_DECLINE_PROBABILITY_THRESHOLD = 40.0   # Max predicted approval prob below which traditional credit declines
+
+
+# ============================================================
+# 1. CREDIT INTELLIGENCE ENGINE
+# ============================================================
+
+def evaluate_credit_intelligence(application: LoanApplication):
+    """
+    Evaluates applicant creditworthiness via the XGBoost model and SHAP explainability.
+    Distinguishes established credit history from thin-file (New-to-Credit) uncertainty.
+    
+    Thin-File Imputation Context:
+    When CreditScore = 0 (thin file), it is converted to NaN and imputed to the population
+    median (~650) as a neutral baseline input representation for XGBoost. Thin-file uncertainty
+    is separately preserved as policy context and evaluated in the Decision Engine.
+    """
+    credit_df = prepare_credit_dataframe(application)
+    is_thin_file = bool(float(application.CreditScore) == 0)
+
+    # Raw predicted probability of approval P(Approved=1) from XGBoost
+    credit_probability = float(credit_model.predict_proba(credit_df)[0][1])
+    predicted_approval_prob = round(credit_probability * 100, 2)
+
+    credit_reasons = get_credit_reasons(credit_df)
+
+    if is_thin_file:
+        credit_strength = "THIN_FILE"
+        history_note = (
+            "Limited traditional credit history on record (New-to-Credit). "
+            "Missing bureau score is represented using a baseline population median (~650) for model input, "
+            "while thin-file uncertainty is separately retained and evaluated in policy context."
+        )
+    elif predicted_approval_prob >= POLICY_APPROVAL_PROBABILITY_THRESHOLD:
+        credit_strength = "STRONG"
+        history_note = "Established credit history with strong predicted loan approval likelihood."
+    elif predicted_approval_prob >= POLICY_DECLINE_PROBABILITY_THRESHOLD:
+        credit_strength = "BORDERLINE"
+        history_note = "Established credit history with borderline repayment indicators."
+    else:
+        credit_strength = "WEAK"
+        history_note = "Established credit history with weak predicted approval probability."
+
+    return {
+        "is_thin_file": is_thin_file,
+        "predicted_approval_probability": predicted_approval_prob,
+        "model_approval_probability": predicted_approval_prob,
+        "credit_confidence": predicted_approval_prob,  # Kept for backward compatibility
+        "credit_strength": credit_strength,
+        "credit_history_status": "THIN_FILE" if is_thin_file else "ESTABLISHED_CREDIT",
+        "credit_history_note": history_note,
+        "credit_reasons": credit_reasons,
+        "credit_score_used": None if is_thin_file else float(application.CreditScore),
+    }
+
+
+# ============================================================
+# 2. FINANCIAL RISK ENGINE
+# ============================================================
+
+def evaluate_financial_risk(application: LoanApplication, is_thin_file: bool):
+    """
+    Evaluates affordability, repayment capacity, and debt obligations independently
+    from the credit ML model.
+    """
+    financial_concerns = []
+
+    # 1. Income & DTI calculation (safe against zero/missing income)
+    monthly_income = float(application.MonthlyIncome) if application.MonthlyIncome else 0.0
+    annual_income = float(application.AnnualIncome) if application.AnnualIncome else 0.0
+
+    if monthly_income <= 0 and annual_income > 0:
+        monthly_income = annual_income / 12.0
+
+    monthly_debt = float(application.MonthlyDebtPayments) if application.MonthlyDebtPayments else 0.0
+    loan_amount = float(application.LoanAmount) if application.LoanAmount else 0.0
+
+    if monthly_income > 0:
+        dti = monthly_debt / monthly_income
+    elif monthly_debt > 0:
+        dti = float("inf")
+    else:
+        dti = 0.0
+
+    # 2. Debt burden & affordability tiers
+    if dti == float("inf"):
+        financial_concerns.append("Zero reported income with ongoing monthly debt obligations (Undefined DTI).")
+        dti_status = "CRITICAL"
+    elif dti >= 1.0:
+        financial_concerns.append(
+            f"Critical debt-to-income burden ({dti * 100:,.1f}%): Monthly debt obligations (₹{monthly_debt:,.0f}) "
+            f"exceed total monthly income (₹{monthly_income:,.0f}) by {dti:,.1f}x."
+        )
+        dti_status = "CRITICAL"
+    elif dti >= 0.50:
+        financial_concerns.append(
+            f"High debt-to-income ratio ({dti * 100:,.1f}%): Monthly debt obligations consume over half of monthly income."
+        )
+        dti_status = "HIGH"
+    elif dti >= 0.36:
+        dti_status = "MODERATE"
+    else:
+        dti_status = "HEALTHY"
+
+    # 3. Monthly cash flow solvency
+    monthly_cash_flow = monthly_income - monthly_debt
+    if monthly_cash_flow < 0 and dti < 1.0:
+        financial_concerns.append(
+            f"Negative monthly cash flow: Monthly debt obligations of ₹{monthly_debt:,.0f} exceed monthly income of ₹{monthly_income:,.0f}."
+        )
+
+    # 4. Income level viability & loan exposure
+    if annual_income > 0 and annual_income < 1000:
+        financial_concerns.append(
+            f"Nominal income profile: Reported annual income (₹{annual_income:,.0f}) is severely insufficient to support requested loan of ₹{loan_amount:,.0f}."
+        )
+    elif annual_income > 0 and loan_amount > (annual_income * 2):
+        financial_concerns.append(
+            f"High loan-to-income exposure: Requested loan (₹{loan_amount:,.0f}) is {loan_amount / annual_income:.1f}x total annual income (₹{annual_income:,.0f})."
+        )
+
+    # 5. Revolving credit utilization
+    utilization = float(application.CreditCardUtilizationRate or 0)
+    if utilization >= 0.80:
+        financial_concerns.append(f"High credit utilization ({utilization * 100:.0f}%).")
+
+    # 6. Repayment track record
+    if int(application.PreviousLoanDefaults or 0) > 0:
+        financial_concerns.append(f"Previous loan defaults reported ({application.PreviousLoanDefaults} default(s) on record).")
+
+    if int(application.BankruptcyHistory or 0) > 0:
+        financial_concerns.append("Previous bankruptcy history reported.")
+
+    if float(application.PaymentHistory or 0) < 18:
+        financial_concerns.append("Weak payment history")
+
+    # 7. Alternative data (Rent payment consistency — evaluated only for thin file)
+    if (
+        is_thin_file
+        and application.RentPaymentConsistency is not None
+        and float(application.RentPaymentConsistency) < 0.70
+    ):
+        financial_concerns.append("Inconsistent alternative payment history (rent)")
+
+    # Deduplicate non-redundantly while preserving order
+    financial_concerns = list(dict.fromkeys(financial_concerns))
+
+    # Determine overall financial risk level
+    if dti_status == "CRITICAL" or (annual_income > 0 and annual_income < 1000) or int(application.PreviousLoanDefaults or 0) >= 2 or int(application.BankruptcyHistory or 0) >= 1:
+        financial_risk_level = "CRITICAL"
+    elif dti_status == "HIGH" or utilization >= 0.80 or len(financial_concerns) >= 2:
+        financial_risk_level = "HIGH"
+    elif dti_status == "MODERATE" or len(financial_concerns) == 1:
+        financial_risk_level = "MEDIUM"
+    else:
+        financial_risk_level = "LOW"
+
+    return {
+        "financial_risk_level": financial_risk_level,
+        "debt_to_income_ratio": None if dti == float("inf") else round(dti, 4),
+        "dti_percentage": None if dti == float("inf") else round(dti * 100, 2),
+        "dti_status": dti_status,
+        "monthly_cash_flow": monthly_cash_flow,
+        "financial_risk_factors": financial_concerns,
+    }
+
+
+# ============================================================
+# 3. BEHAVIORAL INTELLIGENCE ENGINE
+# ============================================================
+
+def evaluate_behavioral_intelligence(transaction: TransactionInput):
+    """
+    Evaluates real-time transaction activity.
+    Clearly separates ML Anomaly Detection (Isolation Forest) from Deterministic Transaction Rule Checks.
+
+    Isolation Forest Scoring & Classification:
+    - IsolationForest.decision_function(X) outputs raw real numbers where values > 0 represent
+      normal inliers and values < 0 represent anomalous outliers.
+    - IsolationForest.predict(X) outputs +1 for inliers (NORMAL) and -1 for outliers (ANOMALOUS).
+    - Custom Linear Normalization:
+        Normalized Anomaly Score = clamp((0.5 - decision_function) * 100, 0, 100)
+      This maps the typical decision function domain [-0.5 (anomalous), +0.5 (normal)] to a
+      0–100 risk scale where 0 is lowest risk and 100 is highest anomaly risk.
+    """
+    behavior_X = prepare_behavior_dataframe(transaction)
+    behavior_scaled = behavior_scaler.transform(behavior_X)
+
+    behavior_prediction = behavior_model.predict(behavior_scaled)[0]
+    behavior_raw_score = float(behavior_model.decision_function(behavior_scaled)[0])
+
+    anomaly_detected = bool(behavior_prediction == -1)
+    normalized_anomaly_score = max(
+        0.0,
+        min(
+            100.0,
+            round(float((0.5 - behavior_raw_score) * 100), 2)
+        )
+    )
+    model_status = "ANOMALOUS" if anomaly_detected else "NORMAL"
+
+    # Deterministic Transaction Rule Checks (separate from ML Isolation Forest)
+    transaction_rule_checks = []
+    high_signals = []
+    medium_signals = []
+
+    amount = float(transaction.TransactionAmount or 0)
+    balance = float(transaction.AccountBalance or 0)
+
+    if amount > balance:
+        flag = f"Transaction amount (₹{amount:,.0f}) exceeds available account balance (₹{balance:,.0f})."
+        transaction_rule_checks.append(flag)
+        high_signals.append(flag)
+    elif balance > 0 and amount > balance * 0.50:
+        flag = f"Transaction is large relative to account balance (₹{amount:,.0f} vs ₹{balance:,.0f})."
+        transaction_rule_checks.append(flag)
+        medium_signals.append(flag)
+
+    login_attempts = int(transaction.LoginAttempts or 0)
+    if login_attempts >= 4:
+        flag = f"Unusually high login attempts ({login_attempts} attempts detected)."
+        transaction_rule_checks.append(flag)
+        high_signals.append(flag)
+    elif login_attempts >= 2:
+        flag = f"Elevated login attempts ({login_attempts} attempts detected)."
+        transaction_rule_checks.append(flag)
+        medium_signals.append(flag)
+
+    duration = float(transaction.TransactionDuration or 0)
+    if duration >= 180:
+        flag = f"Extended transaction duration ({duration:.0f} seconds)."
+        transaction_rule_checks.append(flag)
+        medium_signals.append(flag)
+
+    if anomaly_detected:
+        medium_signals.append("ML anomaly model detected unusual behavioral signature.")
+
+    # Behavioral Risk Level Calibration
+    if (amount > balance and anomaly_detected) or (login_attempts >= 4 and anomaly_detected) or len(high_signals) >= 2:
+        behavioral_risk_level = "HIGH"
+    elif anomaly_detected or len(high_signals) >= 1 or len(medium_signals) >= 2:
+        behavioral_risk_level = "MEDIUM"
+    elif len(medium_signals) >= 1:
+        behavioral_risk_level = "MEDIUM"
+    else:
+        behavioral_risk_level = "LOW"
+
+    return {
+        "model_status": model_status,
+        "anomaly_detected": anomaly_detected,
+        "raw_decision_function": round(behavior_raw_score, 4),
+        "normalized_anomaly_score": normalized_anomaly_score,
+        "behavioral_anomaly_score": normalized_anomaly_score,  # Kept for backward compatibility
+        "transaction_rule_checks": transaction_rule_checks,
+        "rule_checks_flagged": transaction_rule_checks,
+        "high_risk_signals": list(dict.fromkeys(high_signals)),
+        "medium_risk_signals": list(dict.fromkeys(medium_signals)),
+        "behavioral_risk_level": behavioral_risk_level,
+    }
+
+
+# ============================================================
+# 4. DECISION ENGINE & DYNAMIC NARRATIVE
+# ============================================================
+
+def make_decision(credit_info, financial_info, behavioral_info):
+    """
+    Fuses Credit Intelligence, Financial Risk, Behavioral Risk, and Thin-File Status
+    into a defensible lending recommendation (APPROVE / REVIEW / DECLINE) with dynamic reasoning.
+    
+    Principles:
+    - Thin-file status alone NEVER causes DECLINE.
+    - Thin-file status alone NEVER guarantees APPROVE.
+    - Thin-file applicants are APPROVED only when the available model probability (>= 70%)
+      and financial/transaction health independently support approval.
+    - If evidence is insufficient, borderline, or mixed -> REVIEW.
+    """
+    is_thin_file = credit_info["is_thin_file"]
+    pred_prob = credit_info["predicted_approval_probability"]
+    credit_strength = credit_info["credit_strength"]
+
+    fin_risk = financial_info["financial_risk_level"]
+    fin_factors = financial_info["financial_risk_factors"]
+
+    beh_risk = behavioral_info["behavioral_risk_level"]
+    beh_model_status = behavioral_info["model_status"]
+    beh_rule_flags = behavioral_info["transaction_rule_checks"]
+
+    primary_drivers = []
+
+    # 1. Decision Hierarchy
+    if is_thin_file:
+        # Thin-File Policy: Lack of credit score represents limited bureau evidence / uncertainty.
+        if fin_risk == "CRITICAL":
+            final_decision = "REVIEW"
+            primary_drivers.append("Critical financial affordability risk (debt burden / cash flow deficit)")
+        elif fin_risk == "HIGH":
+            final_decision = "REVIEW"
+            primary_drivers.append("Elevated financial risk factors on thin-file profile")
+        elif beh_risk in ["MEDIUM", "HIGH"] or len(beh_rule_flags) > 0 or beh_model_status == "ANOMALOUS":
+            final_decision = "REVIEW"
+            if len(beh_rule_flags) > 0:
+                primary_drivers.append("Transaction rule check warning")
+            if beh_model_status == "ANOMALOUS":
+                primary_drivers.append("Behavioral anomaly detected")
+        elif pred_prob >= 70.0 and fin_risk == "LOW" and beh_risk == "LOW" and len(beh_rule_flags) == 0:
+            # Independent positive evidence across credit model, financial capacity, and clean transaction behavior
+            final_decision = "APPROVE"
+            primary_drivers.append(f"Strong independent model prediction ({pred_prob}%) and clean financial capacity")
+        else:
+            # Limited evidence / borderline model probability (pred_prob < 70) or moderate financial risk
+            final_decision = "REVIEW"
+            primary_drivers.append("Limited traditional credit history with insufficient independent evidence for auto-approval")
+
+    else:
+        # Established Credit Policy
+        if fin_risk == "CRITICAL":
+            final_decision = "REVIEW" if pred_prob >= 40 else "DECLINE"
+            primary_drivers.append("Critical debt-to-income and cash flow risk")
+        elif credit_strength == "STRONG" and fin_risk in ["LOW", "MEDIUM"] and beh_risk == "LOW" and len(beh_rule_flags) == 0:
+            final_decision = "APPROVE"
+            primary_drivers.append(f"Strong predicted approval probability ({pred_prob}%) with clean financial health")
+        elif credit_strength == "WEAK" and fin_risk in ["HIGH", "CRITICAL"]:
+            final_decision = "DECLINE"
+            primary_drivers.append(f"Weak model predicted approval probability ({pred_prob}%) compounded by elevated financial risk")
+        elif credit_strength == "WEAK":
+            final_decision = "DECLINE"
+            primary_drivers.append(f"Low predicted approval probability ({pred_prob}%) below lending threshold")
+        elif beh_risk == "HIGH" or beh_model_status == "ANOMALOUS":
+            final_decision = "REVIEW"
+            primary_drivers.append("Significant behavioral anomaly detected on account")
+        elif len(beh_rule_flags) > 0:
+            final_decision = "REVIEW"
+            primary_drivers.append("Transaction rule check warning")
+        elif credit_strength == "BORDERLINE" or fin_risk in ["HIGH", "CRITICAL"]:
+            final_decision = "REVIEW"
+            primary_drivers.append("Borderline credit indicators requiring manual underwriting review")
+        else:
+            final_decision = "REVIEW"
+            primary_drivers.append("Mixed credit and behavioral profile")
+
+    # 2. Dynamic Explainable Reasoning Construction
+    reasoning_parts = []
+
+    if is_thin_file:
+        reasoning_parts.append(
+            "Applicant has limited traditional credit history (New-to-Credit). "
+            "Missing bureau score is represented using baseline population median imputation (~650) for model input, "
+            "while thin-file uncertainty is separately evaluated in policy context."
+        )
+        if final_decision == "APPROVE":
+            reasoning_parts.append(
+                f"Independent model prediction ({pred_prob}%), financial capacity, and transaction behavior "
+                "are all healthy, qualifying this application for approval."
+            )
+        else:
+            specific_reasons = []
+            if fin_factors:
+                specific_reasons.append(f"Financial risk indicators: {'; '.join(fin_factors)}")
+            if beh_rule_flags:
+                specific_reasons.append(f"Transaction rule checks: {'; '.join(beh_rule_flags)}")
+            if beh_model_status == "ANOMALOUS":
+                specific_reasons.append("ML behavioral model flagged transaction anomaly")
+
+            reasons_summary = ". ".join(specific_reasons) if specific_reasons else "Manual underwriting review required due to limited bureau evidence"
+            reasoning_parts.append(
+                f"This application is routed to REVIEW due to: {reasons_summary}. "
+                "Thin-file status alone did not cause the review."
+            )
+    else:
+        if final_decision == "APPROVE":
+            reasoning_parts.append(
+                f"Strong credit profile with {pred_prob}% predicted approval probability. "
+                "Financial capacity and behavioral patterns are healthy."
+            )
+        elif final_decision == "DECLINE":
+            reasons_summary = f" Key financial risk factors: {'; '.join(fin_factors)}." if fin_factors else ""
+            reasoning_parts.append(
+                f"Predicted approval probability is low ({pred_prob}%), indicating high default risk "
+                f"that does not meet automatic approval criteria.{reasons_summary}"
+            )
+        else:
+            specific_reasons = []
+            if fin_factors:
+                specific_reasons.append(f"Financial factors: {'; '.join(fin_factors)}")
+            if beh_rule_flags:
+                specific_reasons.append(f"Transaction rule checks: {'; '.join(beh_rule_flags)}")
+            if beh_model_status == "ANOMALOUS":
+                specific_reasons.append("ML anomaly model flagged anomalous activity")
+            reasons_summary = ". ".join(specific_reasons) if specific_reasons else "Mixed profile signals"
+            reasoning_parts.append(
+                f"Application routed for human underwriter review ({credit_strength.lower()} credit profile). "
+                f"Details: {reasons_summary}."
+            )
+
+    reasoning = " ".join(reasoning_parts)
+
+    return {
+        "final_decision": final_decision,
+        "primary_drivers": primary_drivers,
+        "reasoning": reasoning,
+    }
+
+
+# ============================================================
+# UNIFIED CREDME DECISION ENDPOINT
 # ============================================================
 
 @app.post(
@@ -1298,686 +1721,83 @@ def generate_behavior_signals(
 def decision(
     request: DecisionRequest
 ):
+    application = request.application
+    transaction = request.transaction
 
-    application = (
-        request.application
-    )
+    # 1. Evaluate Credit Intelligence Layer
+    credit_info = evaluate_credit_intelligence(application)
 
-    transaction = (
-        request.transaction
-    )
+    # 2. Evaluate Financial Risk Engine Layer
+    financial_info = evaluate_financial_risk(application, credit_info["is_thin_file"])
 
-    # ========================================================
-    # 1. CREDIT ASSESSMENT
-    # ========================================================
+    # 3. Evaluate Behavioral Intelligence Layer
+    behavioral_info = evaluate_behavioral_intelligence(transaction)
 
-    credit_df = (
-        prepare_credit_dataframe(
-            application
-        )
-    )
+    # 4. Run Decision Engine
+    decision_result = make_decision(credit_info, financial_info, behavioral_info)
 
-    # ========================================================
-    # THIN-FILE DETECTION
-    # ========================================================
-
-    is_thin_file = (
-        float(
-            application.CreditScore
-        ) == 0
-    )
-
-    # ========================================================
-    # CREDIT PROBABILITY
-    # ========================================================
-
-    credit_probability = (
-        credit_model
-        .predict_proba(
-            credit_df
-        )[0][1]
-    )
-
-    credit_probability = float(
-        credit_probability
-    )
-
-    credit_confidence = round(
-        credit_probability * 100,
-        2
-    )
-
-    # ========================================================
-    # CREDIT SHAP
-    # ========================================================
-
-    credit_reasons = (
-        get_credit_reasons(
-            credit_df
-        )
-    )
-
-    # ========================================================
-    # 2. BEHAVIORAL ASSESSMENT
-    # ========================================================
-
-    behavior_X = (
-        prepare_behavior_dataframe(
-            transaction
-        )
-    )
-
-    behavior_scaled = (
-        behavior_scaler
-        .transform(
-            behavior_X
-        )
-    )
-
-    behavior_prediction = (
-        behavior_model
-        .predict(
-            behavior_scaled
-        )[0]
-    )
-
-    behavior_raw_score = (
-        behavior_model
-        .decision_function(
-            behavior_scaled
-        )[0]
-    )
-
-    anomaly_detected = bool(
-        behavior_prediction == -1
-    )
-
-    behavioral_anomaly_score = max(
-        0,
-        min(
-            100,
-            round(
-                float(
-                    (
-                        0.5
-                        - behavior_raw_score
-                    )
-                    * 100
-                ),
-                2
+    # Thin-file context (strictly non-duplicated bureau information)
+    if credit_info["is_thin_file"]:
+        thin_file_context = [
+            "Limited traditional credit history on record (New-to-Credit).",
+            "Missing credit score is represented using baseline population median imputation (~650) for model input."
+        ]
+        if application.RentPaymentConsistency is not None:
+            thin_file_context.append(
+                f"Alternative payment data incorporated (Rent Payment Consistency: {float(application.RentPaymentConsistency)*100:.0f}%)."
             )
-        )
-    )
-
-    # ========================================================
-    # 3. BEHAVIORAL SIGNAL ANALYSIS
-    # ========================================================
-
-    high_signals = []
-
-    medium_signals = []
-
-    amount = float(
-        transaction.TransactionAmount
-    )
-
-    balance = float(
-        transaction.AccountBalance
-    )
-
-    # --------------------------------------------------------
-    # Transaction amount
-    # --------------------------------------------------------
-
-    if amount > balance:
-
-        high_signals.append(
-            "Transaction exceeds account balance"
-        )
-
-    elif amount > balance * 0.50:
-
-        medium_signals.append(
-            "Transaction is large relative to account balance"
-        )
-
-    # --------------------------------------------------------
-    # Login attempts
-    # --------------------------------------------------------
-
-    if transaction.LoginAttempts >= 4:
-
-        high_signals.append(
-            "Unusually high login attempts"
-        )
-
-    elif transaction.LoginAttempts >= 2:
-
-        medium_signals.append(
-            "Elevated login attempts"
-        )
-
-    # --------------------------------------------------------
-    # Transaction duration
-    # --------------------------------------------------------
-
-    if (
-        transaction.TransactionDuration
-        >= 180
-    ):
-
-        medium_signals.append(
-            "Unusually long transaction duration"
-        )
-
-    # --------------------------------------------------------
-    # ML anomaly
-    # --------------------------------------------------------
-
-    if anomaly_detected:
-
-        medium_signals.append(
-            "ML model detected unusual behavior"
-        )
-
-    # ========================================================
-    # 4. CALIBRATED BEHAVIORAL RISK
-    # ========================================================
-
-    if len(high_signals) >= 2:
-
-        behavioral_risk = "HIGH"
-
-    elif (
-        len(high_signals) >= 1
-        and anomaly_detected
-    ):
-
-        behavioral_risk = "HIGH"
-
-    elif (
-        len(high_signals) >= 1
-        or anomaly_detected
-        or len(medium_signals) >= 1
-    ):
-
-        behavioral_risk = "MEDIUM"
-
     else:
+        thin_file_context = []
 
-        behavioral_risk = "LOW"
-
-    # ========================================================
-    # 5. CREDIT STRENGTH
-    # ========================================================
-
-    if is_thin_file:
-
-        credit_strength = "THIN_FILE"
-
-    elif credit_confidence >= 70:
-
-        credit_strength = "STRONG"
-
-    elif credit_confidence >= 40:
-
-        credit_strength = "BORDERLINE"
-
+    # Summary string formatting
+    if credit_info["is_thin_file"]:
+        credit_summary = "THIN-FILE — no traditional credit history"
     else:
-
-        credit_strength = "WEAK"
-
-    # ========================================================
-    # 6. FINANCIAL RISK SCREEN
-    # ========================================================
-
-    financial_concerns = []
-
-    # --------------------------------------------------------
-    # Debt burden
-    # --------------------------------------------------------
-
-    if (
-        application.TotalDebtToIncomeRatio
-        >= 0.60
-    ):
-
-        financial_concerns.append(
-            "High total debt-to-income ratio"
-        )
-
-    # --------------------------------------------------------
-    # Credit utilization
-    # --------------------------------------------------------
-
-    if (
-        application.CreditCardUtilizationRate
-        >= 0.80
-    ):
-
-        financial_concerns.append(
-            "High credit utilization"
-        )
-
-    # --------------------------------------------------------
-    # Previous defaults
-    # --------------------------------------------------------
-
-    if (
-        application.PreviousLoanDefaults
-        > 0
-    ):
-
-        financial_concerns.append(
-            "Previous loan defaults reported"
-        )
-
-    # --------------------------------------------------------
-    # Bankruptcy
-    # --------------------------------------------------------
-
-    if (
-        application.BankruptcyHistory
-        > 0
-    ):
-
-        financial_concerns.append(
-            "Previous bankruptcy history reported"
-        )
-
-    # --------------------------------------------------------
-    # Payment history
-    # --------------------------------------------------------
-    #
-    # PaymentHistory is NOT a 0-1 ratio. In the training data
-    # (data/Loan.csv) it ranges ~8-45, with a 10th percentile
-    # of ~18. The previous "< 0.70" threshold assumed a 0-1
-    # scale and therefore never fired for any real applicant.
-    #
-    # --------------------------------------------------------
-
-    if (
-        application.PaymentHistory
-        < 18
-    ):
-
-        financial_concerns.append(
-            "Weak payment history"
-        )
-
-    # --------------------------------------------------------
-    # Alternative data: rent payment consistency (illustrative)
-    # --------------------------------------------------------
-    #
-    # Only considered for thin-file applicants — this is
-    # exactly the population traditional credit data can't
-    # speak to, and alternative data is meant to fill that gap
-    # rather than override an existing traditional score.
-    #
-    # --------------------------------------------------------
-
-    if (
-        is_thin_file
-        and application.RentPaymentConsistency is not None
-        and application.RentPaymentConsistency < 0.70
-    ):
-
-        financial_concerns.append(
-            "Inconsistent alternative payment history (rent)"
-        )
-
-    # ========================================================
-    # 7. FINAL CREDME DECISION
-    # ========================================================
-    #
-    # IMPORTANT:
-    #
-    # THIN-FILE STATUS ALONE CAN NEVER CAUSE DECLINE.
-    #
-    # Behavioral anomaly alone also does not automatically
-    # cause a decline.
-    #
-    # ========================================================
-
-    if is_thin_file:
-
-        severe_financial_risk = (
-            (
-                application.TotalDebtToIncomeRatio
-                >= 0.85
-            )
-            or
-            (
-                application.CreditCardUtilizationRate
-                >= 0.95
-            )
-            or
-            (
-                application.PreviousLoanDefaults
-                >= 2
-            )
-            or
-            (
-                application.BankruptcyHistory
-                >= 1
-            )
-        )
-
-        if severe_financial_risk:
-
-            final_decision = "REVIEW"
-
-        elif (
-            behavioral_risk == "HIGH"
-            or len(financial_concerns) >= 2
-        ):
-
-            final_decision = "REVIEW"
-
-        elif (
-            behavioral_risk == "MEDIUM"
-            or len(financial_concerns) == 1
-        ):
-
-            final_decision = "REVIEW"
-
-        else:
-
-            final_decision = "APPROVE"
-
-    else:
-
-        # ----------------------------------------------------
-        # Strong credit
-        # ----------------------------------------------------
-
-        if (
-            credit_strength == "STRONG"
-            and behavioral_risk == "LOW"
-            and len(financial_concerns) == 0
-        ):
-
-            final_decision = "APPROVE"
-
-        # ----------------------------------------------------
-        # Strong credit + behavioral concern
-        # ----------------------------------------------------
-
-        elif (
-            credit_strength == "STRONG"
-            and behavioral_risk
-            in [
-                "MEDIUM",
-                "HIGH"
-            ]
-        ):
-
-            final_decision = "REVIEW"
-
-        # ----------------------------------------------------
-        # Strong credit + significant financial concern
-        # ----------------------------------------------------
-
-        elif (
-            credit_strength == "STRONG"
-            and len(financial_concerns) >= 2
-        ):
-
-            final_decision = "REVIEW"
-
-        # ----------------------------------------------------
-        # Weak credit
-        # ----------------------------------------------------
-
-        elif (
-            credit_strength == "WEAK"
-        ):
-
-            final_decision = "DECLINE"
-
-        # ----------------------------------------------------
-        # Borderline credit
-        # ----------------------------------------------------
-
-        elif (
-            credit_strength == "BORDERLINE"
-        ):
-
-            final_decision = "REVIEW"
-
-        else:
-
-            final_decision = "REVIEW"
-
-    # ========================================================
-    # 8. FINAL REASONING
-    # ========================================================
-
-    if is_thin_file:
-
-        if final_decision == "APPROVE":
-
-            reasoning = (
-                "Applicant has no traditional credit history. "
-                "The missing credit score was not treated as a "
-                "negative signal. Available financial capacity "
-                "and behavioral activity appear acceptable."
-            )
-
-        else:
-
-            if (
-                behavioral_risk == "HIGH"
-                and len(financial_concerns) > 0
-            ):
-
-                reasoning = (
-                    "Applicant has no traditional credit history. "
-                    "The missing credit score was not treated as "
-                    "negative; however, financial and behavioral "
-                    "risk signals require additional review."
-                )
-
-            elif (
-                behavioral_risk == "HIGH"
-            ):
-
-                reasoning = (
-                    "Applicant has no traditional credit history. "
-                    "The missing credit score was not treated as "
-                    "negative; however, multiple behavioral risk "
-                    "signals require additional review."
-                )
-
-            elif (
-                len(financial_concerns) > 0
-            ):
-
-                reasoning = (
-                    "Applicant has no traditional credit history. "
-                    "The missing credit score was not treated as "
-                    "negative, but available financial indicators "
-                    "require additional review."
-                )
-
-            else:
-
-                reasoning = (
-                    "Applicant has no traditional credit history. "
-                    "Alternative financial and behavioral signals "
-                    "require additional review before lending."
-                )
-
-    elif final_decision == "APPROVE":
-
-        reasoning = (
-            f"Strong credit profile with "
-            f"{credit_confidence}% credit confidence "
-            f"and no significant behavioral or financial "
-            f"concerns."
-        )
-
-    elif final_decision == "DECLINE":
-
-        reasoning = (
-            f"Credit confidence is low at "
-            f"{credit_confidence}%, indicating a weak "
-            f"credit profile that does not meet the "
-            f"automatic approval threshold."
-        )
-
-    else:
-
-        if (
-            behavioral_risk == "HIGH"
-            and len(financial_concerns) > 0
-        ):
-
-            reasoning = (
-                "Credit profile requires additional review "
-                "because significant financial and behavioral "
-                "risk signals were detected."
-            )
-
-        elif (
-            behavioral_risk == "HIGH"
-        ):
-
-            reasoning = (
-                "Credit profile requires additional review "
-                "because significant behavioral risk signals "
-                "were detected."
-            )
-
-        elif (
-            behavioral_risk == "MEDIUM"
-        ):
-
-            reasoning = (
-                f"Credit profile is "
-                f"{credit_strength.lower()} with behavioral "
-                f"activity that warrants additional review."
-            )
-
-        elif (
-            len(financial_concerns) > 0
-        ):
-
-            reasoning = (
-                f"Credit profile is "
-                f"{credit_strength.lower()}, but available "
-                f"financial indicators warrant additional review."
-            )
-
-        else:
-
-            reasoning = (
-                f"Credit profile is "
-                f"{credit_strength.lower()} and the available "
-                f"evidence does not provide enough confidence "
-                f"for automatic approval."
-            )
-
-    # ========================================================
-    # 9. SUMMARY
-    # ========================================================
-
-    if is_thin_file:
-
-        credit_summary = (
-            "THIN-FILE — no traditional credit history"
-        )
-
-    else:
-
-        credit_summary = (
-            f"{credit_confidence}% confidence"
-        )
-
-    # ========================================================
-    # 10. REMOVE DUPLICATES
-    # ========================================================
-
-    high_signals = list(
-        dict.fromkeys(
-            high_signals
-        )
-    )
-
-    medium_signals = list(
-        dict.fromkeys(
-            medium_signals
-        )
-    )
-
-    # ========================================================
-    # 11. FINAL RESPONSE
-    # ========================================================
+        credit_summary = f"{credit_info['predicted_approval_probability']}% predicted approval probability"
 
     return {
+        # Core Decision Output
+        "final_decision": decision_result["final_decision"],
+        "reasoning": decision_result["reasoning"],
+        "primary_drivers": decision_result["primary_drivers"],
 
-        "final_decision":
-            final_decision,
+        # Layer 1: Credit Intelligence
+        "credit_intelligence": credit_info,
+        "predicted_approval_probability": credit_info["predicted_approval_probability"],
+        "model_approval_probability": credit_info["model_approval_probability"],
+        "credit_confidence": credit_info["credit_confidence"],  # Backward-compatible alias
+        "credit_strength": credit_info["credit_strength"],
+        "thin_file": credit_info["is_thin_file"],
+        "credit_score_used": credit_info["credit_score_used"],
+        "reasons": credit_info["credit_reasons"],
 
-        "reasoning":
-            reasoning,
+        # Layer 2: Financial Risk Analysis
+        "financial_intelligence": financial_info,
+        "financial_concerns": financial_info["financial_risk_factors"],
+        "debt_to_income_ratio": financial_info["debt_to_income_ratio"],
+        "dti_percentage": financial_info["dti_percentage"],
 
-        "credit_confidence":
-            credit_confidence,
+        # Layer 3: Behavioral Intelligence
+        "behavioral_intelligence": behavioral_info,
+        "behavioral_risk": behavioral_info["behavioral_risk_level"],
+        "behavioral_anomaly_score": behavioral_info["behavioral_anomaly_score"],
+        "anomaly_detected": behavioral_info["anomaly_detected"],
+        "model_status": behavioral_info["model_status"],
+        "transaction_rule_checks": behavioral_info["transaction_rule_checks"],
+        "rule_checks_flagged": behavioral_info["rule_checks_flagged"],
+        "high_risk_signals": behavioral_info["high_risk_signals"],
+        "medium_risk_signals": behavioral_info["medium_risk_signals"],
 
-        "credit_strength":
-            credit_strength,
+        # Thin-file Context (Clean, non-duplicated)
+        "thin_file_context": thin_file_context,
+        "thin_file_financial_concerns": thin_file_context,
 
-        "thin_file":
-            is_thin_file,
-
-        "credit_score_used":
-            (
-                None
-                if is_thin_file
-                else application.CreditScore
-            ),
-
-        "reasons":
-            credit_reasons,
-
-        "behavioral_anomaly_score":
-            float(
-                behavioral_anomaly_score
-            ),
-
-        "behavioral_risk":
-            behavioral_risk,
-
-        "anomaly_detected":
-            anomaly_detected,
-
-        "high_risk_signals":
-            high_signals,
-
-        "medium_risk_signals":
-            medium_signals,
-
-        "financial_concerns":
-            financial_concerns,
-
-        "thin_file_financial_concerns":
-            (
-                financial_concerns
-                if is_thin_file
-                else []
-            ),
-
+        # High-level Summary
         "summary": {
-
-            "credit":
-                credit_summary,
-
-            "behavior":
-                f"{behavioral_risk} behavioral risk",
-
-            "recommendation":
-                final_decision,
+            "credit": credit_summary,
+            "financial": f"{financial_info['financial_risk_level']} financial risk",
+            "behavior": f"{behavioral_info['behavioral_risk_level']} behavioral risk",
+            "recommendation": decision_result["final_decision"],
         },
     }
 
