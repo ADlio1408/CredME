@@ -547,6 +547,20 @@ class LoanApplication(BaseModel):
 
     NetWorth: float
 
+    # --------------------------------------------------------
+    # ALTERNATIVE DATA (illustrative)
+    # --------------------------------------------------------
+    #
+    # Not sourced from any real bureau/landlord/telecom feed —
+    # this field exists to demonstrate how a genuine alternative-
+    # data signal would plug into the thin-file decision path,
+    # per the "multi-modal" / NTC goal of the problem statement.
+    # Optional and additive: omitting it changes nothing.
+    #
+    # --------------------------------------------------------
+
+    RentPaymentConsistency: float | None = None
+
 
 # ============================================================
 # TRANSACTION INPUT
@@ -1857,6 +1871,27 @@ def decision(
 
         financial_concerns.append(
             "Weak payment history"
+        )
+
+    # --------------------------------------------------------
+    # Alternative data: rent payment consistency (illustrative)
+    # --------------------------------------------------------
+    #
+    # Only considered for thin-file applicants — this is
+    # exactly the population traditional credit data can't
+    # speak to, and alternative data is meant to fill that gap
+    # rather than override an existing traditional score.
+    #
+    # --------------------------------------------------------
+
+    if (
+        is_thin_file
+        and application.RentPaymentConsistency is not None
+        and application.RentPaymentConsistency < 0.70
+    ):
+
+        financial_concerns.append(
+            "Inconsistent alternative payment history (rent)"
         )
 
     # ========================================================

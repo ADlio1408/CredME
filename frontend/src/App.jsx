@@ -34,6 +34,7 @@ const initialApplication = {
   UtilityBillsPaymentHistory: 0.95,
   JobTenure: 5,
   NetWorth: 30000,
+  RentPaymentConsistency: 0.9,
 };
 
 const initialTransaction = {
@@ -127,6 +128,9 @@ function App() {
             ),
             JobTenure: Number(application.JobTenure),
             NetWorth: Number(application.NetWorth),
+            RentPaymentConsistency: Number(
+              application.RentPaymentConsistency
+            ),
           },
 
           transaction: {
@@ -260,6 +264,15 @@ function App() {
               label="Credit Score"
               value={application.CreditScore}
               onChange={(v) => updateApplication("CreditScore", v)}
+            />
+
+            <Field
+              label="Rent Payment Consistency (alt. data, thin-file only)"
+              value={application.RentPaymentConsistency}
+              suffix="%"
+              onChange={(v) =>
+                updateApplication("RentPaymentConsistency", v)
+              }
             />
 
             <SelectField

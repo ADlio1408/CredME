@@ -26,6 +26,13 @@ applicant's transaction activity — anomaly detection, login attempts,
 transaction-to-balance ratio — so a strong credit profile with suspicious
 current activity is routed to review rather than auto-approved.
 
+For thin-file applicants specifically — the population traditional credit
+data structurally can't speak to — CredMe also accepts an optional
+alternative-data signal, `RentPaymentConsistency`, illustrating how a real
+alternative-data source would plug into the thin-file path without
+touching the traditional-credit population at all (it's ignored entirely
+for applicants who have a credit score).
+
 ## Architecture
 
 ```mermaid
@@ -284,9 +291,12 @@ scope for this submission:
   broker (Kafka/Kinesis) feeding this from core banking, and persistence
   of the live state (it currently lives in the API process's memory and
   resets on restart).
-- **Additional alternative-data modalities:** only loan-application data and
-  bank transactions are used today; utility/rent payment history, telecom
-  data, etc. would strengthen the NTC use case further.
+- **Alternative data is illustrative, not sourced:** `RentPaymentConsistency`
+  (see below) demonstrates how a real alternative-data signal would plug
+  into the thin-file path, but it's a form field, not a real landlord/
+  telecom/utility data integration. Additional real modalities (telecom
+  payment history, utility data beyond what's already modeled, etc.) would
+  strengthen the NTC use case further.
 - **Cloud deployment:** the app is containerized (Docker + docker-compose)
   but not deployed anywhere — no AWS/cloud hosting, no monitoring/logging
   infrastructure.

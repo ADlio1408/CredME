@@ -322,6 +322,51 @@ def test_live_stream_broadcasts_ingested_transaction():
         assert event["account_id"] == "AC-STREAM-WS-001"
 
 
+def test_thin_file_with_weak_rent_history_flagged():
+    """
+    RentPaymentConsistency is an illustrative alternative-data
+    signal, only meaningful for thin-file applicants (that's
+    exactly the population traditional credit data can't speak
+    to). Low consistency should surface as a concern.
+    """
+    application = base_application(
+        CreditScore=0,
+        RentPaymentConsistency=0.40,
+    )
+    transaction = base_transaction()
+
+    response = client.post(
+        "/decision",
+        json={"application": application, "transaction": transaction},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (
+        "Inconsistent alternative payment history (rent)"
+        in body["financial_concerns"]
+    )
+
+
+def test_rent_history_ignored_for_non_thin_file_applicants():
+    application = base_application(RentPaymentConsistency=0.10)
+    transaction = base_transaction()
+
+    response = client.post(
+        "/decision",
+        json={"application": application, "transaction": transaction},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (
+        "Inconsistent alternative payment history (rent)"
+        not in body["financial_concerns"]
+    )
+
+
 def test_narrative_requires_admin_scope():
     payload = {
         "application": base_application(),
