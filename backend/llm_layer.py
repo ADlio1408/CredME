@@ -25,7 +25,7 @@ import os
 
 LLM_API_KEY = os.environ.get("CREDME_LLM_API_KEY")
 
-LLM_MODEL = os.environ.get("CREDME_LLM_MODEL", "claude-sonnet-5")
+LLM_MODEL = os.environ.get("CREDME_LLM_MODEL", "gpt-4o-mini")
 
 
 # ------------------------------------------------------------
@@ -166,21 +166,24 @@ def _call_llm(prompt):
     Only reached when CREDME_LLM_API_KEY is set. Imports the
     SDK lazily so the rest of the app works without it
     installed when no key is configured.
+
+    Note: LLM_MODEL defaults to "gpt-4o-mini" — a widely
+    available, low-cost OpenAI chat model at the time this was
+    written. If your key doesn't have access to it, or OpenAI
+    has since renamed/retired it, override via CREDME_LLM_MODEL.
     """
 
-    import anthropic
+    import openai
 
-    client = anthropic.Anthropic(api_key=LLM_API_KEY)
+    client = openai.OpenAI(api_key=LLM_API_KEY)
 
-    response = client.messages.create(
+    response = client.chat.completions.create(
         model=LLM_MODEL,
         max_tokens=300,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    return "".join(
-        block.text for block in response.content if block.type == "text"
-    )
+    return response.choices[0].message.content
 
 
 def generate_narrative_explanation(decision):

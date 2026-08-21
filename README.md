@@ -99,7 +99,7 @@ admin key can write to it via `/stream/transaction`.
   persisted as `.joblib` (`models/`)
 - **Containerization:** Docker + docker-compose (`backend/Dockerfile`,
   `frontend/Dockerfile`, `docker-compose.yml`)
-- **LLM layer (scaffold):** Anthropic SDK integration for applicant-facing
+- **LLM layer (scaffold):** OpenAI SDK integration for applicant-facing
   narrative generation (`backend/llm_layer.py`) — wired, guardrailed, and
   disabled by default (see below)
 
@@ -125,8 +125,10 @@ logic already produced.
   template-based narrative built from the same fields the prompt would use
   (`"source": "template_fallback"`) — the integration code is real and
   tested, but nothing is sent to a model or billed unless a key is
-  explicitly configured. Set `CREDME_LLM_API_KEY` (and optionally
-  `CREDME_LLM_MODEL`, default `claude-sonnet-5`) to enable real calls.
+  explicitly configured. Set `CREDME_LLM_API_KEY` to an OpenAI API key from
+  `platform.openai.com` (a ChatGPT Plus/Go/Pro subscription does **not**
+  include API access — API billing is separate) and optionally
+  `CREDME_LLM_MODEL` (default `gpt-4o-mini`) to enable real calls.
 
 ## Model performance
 
